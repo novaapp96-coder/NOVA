@@ -38,13 +38,15 @@
     "jest-expo": "^57.0.5",
     "typescript": "~6.0.3"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "scripts": {
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "test": "jest",
-    "eas-build-pre-install": "echo '[pre-install] NODE_OPTIONS=$NODE_OPTIONS npm: $(npm -v) node: $(node -v)'; cat package.json | head -20"
+    "test": "jest"
   },
   "jest": {
     "preset": "jest-expo",
