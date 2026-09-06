@@ -2,7 +2,7 @@
   "name": "my-cart",
   "version": "1.0.0",
   "main": "index.ts",
-  "packageManager": "pnpm@9.0.0",
+  "packageManager": "pnpm@9.15.0",
   "dependencies": {
     "@expo-google-fonts/tajawal": "^0.4.1",
     "@expo/metro-runtime": "~57.0.14",
