@@ -32,7 +32,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "552f0665-e30d-4f11-9ea9-97bc22a22809"
+        "projectId": "2db40b68-e47a-4426-9621-b52b8447df26"
       }
     },
     "updates": {
@@ -41,7 +41,7 @@
     "runtimeVersion": {
       "policy": "appVersion"
     },
-    "owner": "arcadalabs",
+    "owner": "adilo47s-team",
     "platforms": [
       "ios",
       "android",

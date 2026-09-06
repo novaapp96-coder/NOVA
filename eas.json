@@ -5,12 +5,20 @@
   "build": {
     "preview": {
       "distribution": "internal",
+      "env": {
+        "NODE_VERSION": "20.12.2",
+        "CI": "0"
+      },
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease"
       }
     },
     "production": {
+      "env": {
+        "NODE_VERSION": "20.12.2",
+        "CI": "0"
+      },
       "android": {
         "buildType": "apk",
         "gradleCommand": ":app:assembleRelease"
