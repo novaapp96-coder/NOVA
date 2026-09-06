@@ -1,4 +1,4 @@
-import { latency, localDatabase } from '../data/database';
+﻿import { latency, localDatabase } from '../data/database';
 import { ERR } from '../data/errors';
 import {
   availableStock,
@@ -10,11 +10,13 @@ import {
   validateCoupon,
 } from '../core/logic';
 import { uid } from '../core/security';
+import { isSupabaseConfigured, supabase } from '../core/supabase';
 import type {
   AppNotification,
   Coupon,
   ID,
   Order,
+  OrderItem,
   OrderStatus,
   PublicUser,
   ResolvedCartItem,
@@ -70,7 +72,6 @@ function advance(db: MutableDB): void {
       order.updatedAt = at;
       db.notifications.unshift(notify(order, next));
       if (next === 'confirmed') {
-        // count the sale once, when the order is confirmed
         for (const item of order.items) {
           const product = db.products.find((p) => p.id === item.productId);
           if (product) product.soldCount += item.qty;
@@ -78,6 +79,11 @@ function advance(db: MutableDB): void {
       }
     }
   }
+}
+
+function logError(scope: string, e: unknown): void {
+  // eslint-disable-next-line no-console
+  console.error(`[order] ${scope} failed:`, e);
 }
 
 /**
@@ -99,137 +105,263 @@ export const orderRepository = {
           variantLabels: product.variants
             .filter((v) => item.variantIds.includes(v.id))
             .map((v) => (v.type === 'size' ? `المقاس ${v.value}` : v.value)),
-          unitPrice: product.price,
-          lineTotal: product.price * item.qty,
-        } as ResolvedCartItem;
+        };
       })
-      .filter(Boolean) as ResolvedCartItem[];
-
-    const subtotal = lines.reduce((s, l) => s + l.lineTotal, 0);
+      .filter((l): l is { item: any; product: any; variantLabels: string[] } => l !== null);
+    const subtotal = lines.reduce((s, l) => s + l.product.price * l.item.qty, 0);
     let coupon: Coupon | null = null;
-    let couponError: string | null = null;
-    if (couponCode?.trim()) {
-      const found = db.coupons.find((c) => c.code.toUpperCase() === couponCode.trim().toUpperCase()) ?? null;
-      couponError = validateCoupon(found, subtotal);
-      if (!couponError) coupon = found;
-    }
+    if (couponCode) coupon = db.coupons.find((c) => c.code === couponCode.trim().toUpperCase()) ?? null;
+    const couponError = coupon ? validateCoupon(coupon, subtotal) : null;
     const totals = computeTotals({ subtotal, coupon, settings: db.settings });
-    return { lines, totals, coupon, couponError };
+    return {
+      lines: lines.map((l) => ({
+        item: l.item,
+        product: l.product,
+        variantLabels: l.variantLabels,
+        unitPrice: l.product.price,
+        lineTotal: l.product.price * l.item.qty,
+      })),
+      subtotal,
+      coupon,
+      couponError,
+      deliveryFee: totals.deliveryFee,
+      discount: totals.discount,
+      total: totals.total,
+      freeDelivery: totals.deliveryFee === 0,
+    };
   },
 
-  /**
-   * Creates the order: validates stock for every line, reserves it (decrements), increments the
-   * unique order sequence and stores the order with its status history + customer notification.
-   * Validation and mutation run in one synchronous block — safe against concurrent checkouts.
-   */
-  async createOrder(user: User, input: CheckoutInput): Promise<Order> {
+  async createOrder(
+    user: User,
+    input: CheckoutInput,
+  ): Promise<Order> {
+    await latency(360);
+    // 1) Fetch the cart from localDB (loaded by refresh).
+    const db = await localDatabase.read();
+    const cartLines = (db.carts[user.id] ?? [])
+      .map((item) => {
+        const product = db.products.find((p) => p.id === item.productId);
+        if (!product) return null;
+        const variantLabels = product.variants
+          .filter((v) => item.variantIds.includes(v.id))
+          .map((v) => (v.type === 'size' ? `المقاس ${v.value}` : v.value));
+        return { item, product, variantLabels };
+      })
+      .filter((l): l is { item: any; product: any; variantLabels: string[] } => l !== null);
+    if (!cartLines.length) throw ERR.generic('سلتكِ فارغة.');
+
+    // 2) Validate
+    const items: OrderItem[] = [];
+    for (const line of cartLines) {
+      const product = line.product;
+      if (!product || product.hidden) throw ERR.notFound('المنتج');
+      const stock = availableStock(product, line.item.variantIds);
+      if (line.item.qty > stock) throw ERR.notEnoughStock(product.name, stock);
+      items.push({
+        productId: product.id,
+        name: product.name,
+        image: product.images[0] ?? '',
+        unitPrice: product.price,
+        qty: line.item.qty,
+        variantLabels: line.variantLabels,
+      });
+    }
+
+    const couponCode = input.couponCode?.trim().toUpperCase();
+    let coupon: Coupon | null = null;
+    if (couponCode) coupon = db.coupons.find((c) => c.code === couponCode) ?? null;
+    const couponErr = coupon ? validateCoupon(coupon, items.reduce((s, i) => s + i.unitPrice * i.qty, 0)) : null;
+    if (couponErr) throw ERR.coupon(couponErr);
+
+    const subtotal = items.reduce((s, i) => s + i.unitPrice * i.qty, 0);
+    const totals = computeTotals({ subtotal, coupon, settings: db.settings });
     const fullName = input.fullName.trim();
     const phone = input.phone.trim();
-    const wilaya = input.wilaya.trim();
-    const commune = input.commune.trim();
-    const address = input.address.trim();
     if (fullName.length < 3) throw ERR.generic('يرجى إدخال الاسم الكامل.');
-    if (!/^0[5-7]\d{8}$/.test(phone)) throw ERR.generic('رقم هاتف جزائري غير صحيح.');
-    if (!wilaya) throw ERR.generic('يرجى اختيار الولاية.');
-    if (!commune) throw ERR.generic('يرجى إدخال البلدية.');
-    if (address.length < 5) throw ERR.generic('يرجى إدخال العنوان بالتفصيل.');
+    const { wilaya, commune, address, notes } = input;
+    const at = new Date().toISOString();
 
-    await latency(520);
-    let created: Order | null = null;
-
-    await localDatabase.mutate((db: MutableDB) => {
-      advance(db);
-      const cart = db.carts[user.id] ?? [];
-      if (!cart.length) throw ERR.generic('سلتك فارغة.');
-
-      // 1) validate stock availability for every line
-      for (const line of cart) {
-        const product = db.products.find((p) => p.id === line.productId);
-        if (!product || product.hidden) throw ERR.notFound('منتج في السلة');
-        const stock = availableStock(product, line.variantIds);
-        if (stock < line.qty) {
-          throw stock <= 0 ? ERR.outOfStock(product.name) : ERR.notEnoughStock(product.name, stock);
-        }
+    // 2) Generate unique order id (year-scoped)
+    const year = new Date().getFullYear();
+    const prefix = (db.settings.orderPrefix || 'MC') + '-' + year + '-';
+    let nextSeq = 1;
+    for (const o of db.orders) {
+      if (o.id.startsWith(prefix)) {
+        const seq = Number(o.id.slice(prefix.length));
+        if (Number.isFinite(seq) && seq >= nextSeq) nextSeq = seq + 1;
       }
+    }
+    const orderId = buildOrderId(db.settings.orderPrefix || 'MC', year, nextSeq);
 
-      // 2) coupon (optional)
-      let coupon: Coupon | null = null;
-      if (input.couponCode?.trim()) {
-        const found =
-          db.coupons.find(
-            (c) => c.code.toUpperCase() === input.couponCode!.trim().toUpperCase(),
-          ) ?? null;
-        const err = validateCoupon(found, cart.reduce((s, l) => {
-          const p = db.products.find((x) => x.id === l.productId);
-          return s + (p ? p.price * l.qty : 0);
-        }, 0));
-        if (err) throw ERR.coupon(err);
-        coupon = found;
-      }
+    // 3) Build the order object
+    const order: Order = {
+      id: orderId,
+      userId: user.id,
+      customerName: fullName,
+      phone,
+      wilaya,
+      commune,
+      address,
+      notes: notes?.trim() || undefined,
+      items,
+      subtotal: totals.subtotal,
+      deliveryFee: totals.deliveryFee,
+      discount: totals.discount,
+      total: totals.total,
+      couponCode: coupon?.code,
+      paymentMethod: 'cod',
+      status: 'received',
+      history: [{ status: 'received', at, note: 'تم استلام الطلب', by: 'system' }],
+      createdAt: at,
+      updatedAt: at,
+    };
 
-      // 3) unique sequential order id (MC-2026-0001)
-      db.orderSeq += 1;
-      const orderId = buildOrderId(db.settings.orderPrefix, db.settings.orderYear, db.orderSeq);
-      if (db.orders.some((o) => o.id === orderId)) throw ERR.orderCreate();
+    // 4) Persist to Supabase (best-effort) then update local cache.
+    if (isSupabaseConfigured) {
+      try {
+        const { error: orderErr } = await supabase.from('orders').insert({
+          id: order.id,
+          user_id: order.userId,
+          customer_name: order.customerName,
+          phone: order.phone,
+          wilaya: order.wilaya,
+          commune: order.commune,
+          address: order.address,
+          notes: order.notes ?? null,
+          subtotal: order.subtotal,
+          delivery_fee: order.deliveryFee,
+          discount: order.discount,
+          total: order.total,
+          coupon_code: order.couponCode ?? null,
+          payment_method: order.paymentMethod,
+          status: order.status,
+        });
+        if (orderErr) throw orderErr;
 
-      // 4) reserve stock (decrement) — prevents overselling
-      const items = cart.map((line) => {
-        const product = db.products.find((p) => p.id === line.productId)!;
-        product.stock = Math.max(0, product.stock - line.qty);
-        for (const v of product.variants) {
-          if (line.variantIds.includes(v.id)) v.stock = Math.max(0, v.stock - line.qty);
+        // Insert order items
+        const itemRows = order.items.map((it) => ({
+          order_id: order.id,
+          product_id: it.productId,
+          product_name: it.name,
+          product_image: it.image,
+          variant_labels: it.variantLabels,
+          quantity: it.qty,
+          unit_price: it.unitPrice,
+        }));
+        const { error: itemsErr } = await supabase.from('order_items').insert(itemRows);
+        if (itemsErr) throw itemsErr;
+
+        // Decrement stock for each item (best-effort; optimistic)
+        for (const it of order.items) {
+          const { data: p, error: pErr } = await supabase
+            .from('products')
+            .select('id, stock')
+            .eq('id', it.productId)
+            .maybeSingle();
+          if (pErr || !p) continue;
+          const { error: stockErr } = await supabase
+            .from('products')
+            .update({ stock: Math.max(0, Number(p.stock ?? 0) - it.qty) })
+            .eq('id', it.productId);
+          if (stockErr) throw stockErr;
         }
-        return {
-          productId: product.id,
-          name: product.name,
-          image: product.images[0] ?? '',
-          unitPrice: product.price,
-          qty: line.qty,
-          variantLabels: product.variants
-            .filter((v) => line.variantIds.includes(v.id))
-            .map((v) => (v.type === 'size' ? `المقاس ${v.value}` : v.value)),
-        };
-      });
 
-      const subtotal = items.reduce((s, i) => s + i.unitPrice * i.qty, 0);
-      const totals = computeTotals({ subtotal, coupon, settings: db.settings });
-      const at = new Date().toISOString();
+        // Clear user's cart_items (the matching ones)
+        const { data: userCart } = await supabase
+          .from('carts')
+          .select('id')
+          .eq('user_id', user.id)
+          .maybeSingle();
+        if (userCart) {
+          const { error: clearErr } = await supabase
+            .from('cart_items')
+            .delete()
+            .eq('cart_id', userCart.id);
+          if (clearErr) throw clearErr;
+        }
 
-      const order: Order = {
-        id: orderId,
-        userId: user.id,
-        customerName: fullName,
-        phone,
-        wilaya,
-        commune,
-        address,
-        notes: input.notes?.trim() || undefined,
-        items,
-        subtotal: totals.subtotal,
-        deliveryFee: totals.deliveryFee,
-        discount: totals.discount,
-        total: totals.total,
-        couponCode: coupon?.code,
-        paymentMethod: 'cod',
-        status: 'received',
-        history: [{ status: 'received', at, note: 'تم استلام الطلب', by: 'system' }],
-        createdAt: at,
-        updatedAt: at,
-      };
+        // Insert notification
+        const { error: notifErr } = await supabase.from('notifications').insert({
+          id: uid(),
+          user_id: order.userId,
+          title: STATUS_MESSAGES.received.title,
+          body: `${STATUS_MESSAGES.received.body} (رقم الطلب ${order.id})`,
+          type: 'order',
+          order_id: order.id,
+          read: false,
+        });
+        if (notifErr) throw notifErr;
+      } catch (e) {
+        logError('createOrder', e);
+        // Fall through to local-only save so the user doesn't lose the order.
+      }
+    }
 
+    // 5) Always mirror to local DB so UI is immediate
+    await localDatabase.mutate((dbx) => {
+      for (const it of order.items) {
+        const p = dbx.products.find((x) => x.id === it.productId);
+        if (p) p.stock = Math.max(0, p.stock - it.qty);
+      }
       if (coupon) coupon.uses += 1;
-      db.orders.unshift(order);
-      db.carts[user.id] = [];
-      db.notifications.unshift(notify(order, 'received'));
-      created = order;
+      dbx.orders.unshift(order);
+      dbx.carts[user.id] = [];
+      dbx.notifications.unshift(notify(order, 'received'));
     });
 
-    if (!created) throw ERR.orderCreate();
-    return created;
+    return order;
   },
 
   async listOrders(user: PublicUser): Promise<Order[]> {
     await latency(220);
+    // 1) Try Supabase
+    if (isSupabaseConfigured) {
+      try {
+        let q = supabase
+          .from('orders')
+          .select('id, user_id, status, total, created_at, updated_at')
+          .order('created_at', { ascending: false });
+        if (user.role !== 'admin') q = q.eq('user_id', user.id);
+        const { data, error } = await q;
+        if (error) throw error;
+        const orders = (data ?? []) as Array<{
+          id: string;
+          user_id: string;
+          status: OrderStatus | null;
+          total: number | string | null;
+          created_at: string | null;
+          updated_at: string | null;
+        }>;
+        return orders.map((r) => ({
+          id: r.id,
+          userId: r.user_id,
+          customerName: '',
+          phone: '',
+          wilaya: '',
+          commune: '',
+          address: '',
+          items: [],
+          subtotal: 0,
+          deliveryFee: 0,
+          discount: 0,
+          total: Number(r.total ?? 0),
+          paymentMethod: 'cod',
+          status: (r.status as OrderStatus) ?? 'received',
+          history: [
+            {
+              status: (r.status as OrderStatus) ?? 'received',
+              at: r.updated_at ?? r.created_at ?? new Date().toISOString(),
+              by: 'system',
+            },
+          ],
+          createdAt: r.created_at ?? new Date().toISOString(),
+          updatedAt: r.updated_at ?? r.created_at ?? new Date().toISOString(),
+        }));
+      } catch (e) {
+        logError('listOrders', e);
+      }
+    }
+    // 2) Local fallback (with auto-advance)
     let orders: Order[] = [];
     await localDatabase.mutate((db) => {
       advance(db);
@@ -240,26 +372,193 @@ export const orderRepository = {
     return orders;
   },
 
-  /** Ownership check before revealing any order. */
   async getOrder(user: PublicUser, orderId: string): Promise<Order> {
+    const id = orderId.toUpperCase().trim();
     await latency(200);
+    if (isSupabaseConfigured) {
+      try {
+        const { data: orderRow, error: oErr } = await supabase
+          .from('orders')
+          .select('id, user_id, status, total, created_at, updated_at')
+          .eq('id', id)
+          .maybeSingle();
+        if (oErr) throw oErr;
+        if (!orderRow) throw ERR.notFound('الطلب');
+        if (user.role !== 'admin' && orderRow.user_id !== user.id) throw ERR.forbidden();
+
+        const { data: items, error: iErr } = await supabase
+          .from('order_items')
+          .select('id, product_id, product_name, product_image, variant_labels, quantity, unit_price')
+          .eq('order_id', id);
+        if (iErr) throw iErr;
+
+        return {
+          id: orderRow.id,
+          userId: orderRow.user_id,
+          customerName: '',
+          phone: '',
+          wilaya: '',
+          commune: '',
+          address: '',
+          items: (items ?? []).map((it) => ({
+            productId: it.product_id,
+            name: it.product_name ?? '',
+            image: it.product_image ?? '',
+            unitPrice: Number(it.unit_price ?? 0),
+            qty: it.quantity ?? 0,
+            variantLabels: it.variant_labels ?? [],
+          })),
+          subtotal: 0,
+          deliveryFee: 0,
+          discount: 0,
+          total: Number(orderRow.total ?? 0),
+          paymentMethod: 'cod',
+          status: (orderRow.status as OrderStatus) ?? 'received',
+          history: [],
+          createdAt: orderRow.created_at ?? new Date().toISOString(),
+          updatedAt: orderRow.updated_at ?? new Date().toISOString(),
+        };
+      } catch (e) {
+        if (e instanceof Error && 'code' in e) throw e;
+        logError('getOrder', e);
+      }
+    }
     const db = await localDatabase.read();
     advance(db);
-    const order = db.orders.find((o) => o.id === orderId.toUpperCase().trim());
+    const order = db.orders.find((o) => o.id === id);
     if (!order) throw ERR.notFound('الطلب');
     if (!canAccessOrder(order, user)) throw ERR.forbidden();
     return order;
   },
 
   async findByOrderId(orderId: string): Promise<Order | null> {
+    const id = orderId.toUpperCase().trim();
     await latency(200);
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from('orders')
+          .select('id, user_id, status, total, created_at, updated_at')
+          .eq('id', id)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) return null;
+        return {
+          id: data.id,
+          userId: data.user_id,
+          customerName: '',
+          phone: '',
+          wilaya: '',
+          commune: '',
+          address: '',
+          items: [],
+          subtotal: 0,
+          deliveryFee: 0,
+          discount: 0,
+          total: Number(data.total ?? 0),
+          paymentMethod: 'cod',
+          status: (data.status as OrderStatus) ?? 'received',
+          history: [],
+          createdAt: data.created_at ?? new Date().toISOString(),
+          updatedAt: data.updated_at ?? new Date().toISOString(),
+        };
+      } catch (e) {
+        logError('findByOrderId', e);
+      }
+    }
     const db = await localDatabase.read();
     advance(db);
-    return db.orders.find((o) => o.id === orderId.toUpperCase().trim()) ?? null;
+    return db.orders.find((o) => o.id === id) ?? null;
   },
 
   async cancelOrder(user: PublicUser, orderId: string): Promise<Order> {
+    const id = orderId.toUpperCase().trim();
     await latency(280);
+    if (isSupabaseConfigured) {
+      try {
+        const { data: orderRow, error: rErr } = await supabase
+          .from('orders')
+          .select('id, user_id, status, total, created_at, updated_at')
+          .eq('id', id)
+          .maybeSingle();
+        if (rErr) throw rErr;
+        if (!orderRow) throw ERR.notFound('الطلب');
+        if (orderRow.user_id !== user.id && user.role !== 'admin') throw ERR.forbidden();
+        if (!canCancelOrder((orderRow.status as OrderStatus) ?? 'received'))
+          throw ERR.generic('لا يمكن إلغاء الطلب بعد خروجه للتوصيل. تواصلي معنا.');
+
+        const { data: updated, error: uErr } = await supabase
+          .from('orders')
+          .update({ status: 'cancelled' })
+          .eq('id', id)
+          .select('id, user_id, status, total, created_at, updated_at')
+          .single();
+        if (uErr) throw uErr;
+
+        // Restock items
+        const { data: items, error: iErr } = await supabase
+          .from('order_items')
+          .select('product_id, quantity')
+          .eq('order_id', id);
+        if (iErr) throw iErr;
+        for (const it of items ?? []) {
+          const { data: p, error: pErr } = await supabase
+            .from('products')
+            .select('id, stock')
+            .eq('id', it.product_id)
+            .maybeSingle();
+          if (pErr || !p) continue;
+          const { error: sErr } = await supabase
+            .from('products')
+            .update({ stock: Number(p.stock ?? 0) + Number(it.quantity ?? 0) })
+            .eq('id', it.product_id);
+          if (sErr) throw sErr;
+        }
+
+        // Insert notification
+        const { error: nErr } = await supabase.from('notifications').insert({
+          id: uid(),
+          user_id: orderRow.user_id,
+          title: STATUS_MESSAGES.cancelled.title,
+          body: `${STATUS_MESSAGES.cancelled.body} (رقم الطلب ${orderRow.id})`,
+          type: 'order',
+          order_id: orderRow.id,
+          read: false,
+        });
+        if (nErr) throw nErr;
+
+        return {
+          id: updated.id,
+          userId: updated.user_id,
+          customerName: '',
+          phone: '',
+          wilaya: '',
+          commune: '',
+          address: '',
+          items: [],
+          subtotal: 0,
+          deliveryFee: 0,
+          discount: 0,
+          total: Number(updated.total ?? 0),
+          paymentMethod: 'cod',
+          status: 'cancelled',
+          history: [
+            {
+              status: 'cancelled',
+              at: new Date().toISOString(),
+              by: 'customer',
+            },
+          ],
+          createdAt: updated.created_at ?? new Date().toISOString(),
+          updatedAt: updated.updated_at ?? new Date().toISOString(),
+        };
+      } catch (e) {
+        if (e instanceof Error && 'code' in e) throw e;
+        logError('cancelOrder', e);
+        throw ERR.server();
+      }
+    }
+    // Local fallback
     let updated: Order | null = null;
     await localDatabase.mutate((db) => {
       const order = db.orders.find((o) => o.id === orderId);
@@ -271,7 +570,6 @@ export const orderRepository = {
       const at = new Date().toISOString();
       order.history.push({ status: 'cancelled', at, note: 'ألغت العميلة الطلب', by: 'customer' });
       order.updatedAt = at;
-      // restock the reserved items
       for (const item of order.items) {
         const product = db.products.find((p) => p.id === item.productId);
         if (product) product.stock += item.qty;
