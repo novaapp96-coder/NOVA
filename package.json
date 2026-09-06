@@ -43,7 +43,8 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "test": "jest"
+    "test": "jest",
+    "eas-build-pre-install": "bash -c 'echo \"[eas-build-pre-install] running on $(uname -a)\"; echo \"[eas-build-pre-install] node: $(node -v) npm: $(npm -v)\"; echo \"[eas-build-pre-install] package.json engines: $(cat package.json | grep -A2 engines || echo none)\"'"
   },
   "jest": {
     "preset": "jest-expo",
