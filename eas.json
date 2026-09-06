@@ -22,8 +22,8 @@
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ2ZHVlc2duc29teWFhdnF1ZnRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODg3MDcyNjAsImV4cCI6MjEwNDI4MzI2MH0.D1Hf-VxcPBFqQ9_C4fyRbVA11a3Aa3u-hX9FS36oJl0"
       },
       "android": {
-        "buildType": "apk",
-        "gradleCommand": ":app:assembleRelease"
+        "buildType": "app-bundle",
+        "gradleCommand": ":app:bundleRelease"
       }
     }
   },
