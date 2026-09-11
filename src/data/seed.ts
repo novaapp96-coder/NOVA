@@ -14,12 +14,12 @@ const now = Date.now();
 const days = (n: number) => new Date(now - n * 86400000).toISOString();
 
 export const SEED_CATEGORIES: Category[] = [
-  { id: 'cat-fashion', name: 'أزياء', icon: 'tshirt-crew', emoji: '👗', active: true, sortOrder: 1 },
-  { id: 'cat-beauty', name: 'جمال', icon: 'lipstick', emoji: '💄', active: true, sortOrder: 2 },
-  { id: 'cat-accessories', name: 'إكسسوارات', icon: 'glasses', emoji: '👜', active: true, sortOrder: 3 },
-  { id: 'cat-home', name: 'منزل', icon: 'chair-rolling', emoji: '🏠', active: true, sortOrder: 4 },
-  { id: 'cat-shoes', name: 'أحذية', icon: 'shoe-sneaker', emoji: '👠', active: true, sortOrder: 5 },
-  { id: 'cat-gifts', name: 'هدايا', icon: 'gift', emoji: '🎁', active: true, sortOrder: 6 },
+  { id: 'cat-veggies', name: 'خضروات',        icon: 'fruit-vegetable', emoji: '🥬', active: true, sortOrder: 1 },
+  { id: 'cat-fruits',  name: 'فواكه',         icon: 'fruit-grapes',    emoji: '🍎', active: true, sortOrder: 2 },
+  { id: 'cat-dairy',   name: 'ألبان وبيض',    icon: 'egg',             emoji: '🥛', active: true, sortOrder: 3 },
+  { id: 'cat-meat',    name: 'لحوم وأسماك',   icon: 'food-drumstick',  emoji: '🥩', active: true, sortOrder: 4 },
+  { id: 'cat-bakery',  name: 'مخبوزات',       icon: 'bread-slice',     emoji: '🥖', active: true, sortOrder: 5 },
+  { id: 'cat-pantry',  name: 'بقالة ومعلبات', icon: 'food-variant',    emoji: '🥫', active: true, sortOrder: 6 },
 ];
 
 type SeedProduct = Omit<Product, 'createdAt' | 'updatedAt'>;
@@ -52,152 +52,75 @@ const P = (
   ...opts,
 });
 
-const size = (values: [string, number][]) =>
-  values.map(([value, stock]) => ({ id: uid(), type: 'size' as const, value, stock, swatch: undefined }));
-
-const color = (values: [string, string, number][]) =>
-  values.map(([value, swatch, stock]) => ({ id: uid(), type: 'color' as const, value, stock, swatch }));
-
 const products: SeedProduct[] = [
-  P('فستان سهرة مخملي', 'cat-fashion', 7900, 9500, 18, [img('1595777457583-95e059d581b8'), img('1566174053879-31528523f8ae'), img('1539008835657-9e8e9680c956')], 'فستان سهرة أنيق من القماش المخملي الناعم، قصة عصرية تناسب المناسبات. متوفر بعدة مقاسات ودرجات لونية.', {
-  featured: true,
-  rating: 4.8,
-  reviewsCount: 64,
-  soldCount: 210,
-  variants: size([['S', 4], ['M', 7], ['L', 5], ['XL', 2]]),
-}),
-  P('بلوزة حرير بتفاصيل ناعمة', 'cat-fashion', 3200, 4000, 30, [img('1551163943-3f6a855d1153'), img('1554568218-0f1715e72254')], 'بلوزة حرير خفيفة بأكمام ناعمة وتفاصيل أنثوية، مثالية للإطلالات اليومية والرسمية.', {
+  P('طماطم بلدي طازجة (1 كغ)', 'cat-veggies', 250, 300, 60, [img('1540420773420-3366772f4999'), img('1522184216316-3c25379f9760')], 'طماطم بلدي طازجة من أجود المحاصيل، مثالية للسلطات والطبخ اليومي.', {
   featured: true,
   rating: 4.6,
-  reviewsCount: 41,
+  reviewsCount: 40,
   soldCount: 180,
-  variants: [...size([['S', 8], ['M', 12], ['L', 10]]), ...color([['بيج', '#E7D3C4', 12], ['أسود', '#241C3B', 10], ['وردي', '#FFB6C8', 8]])],
 }),
-  P('جاكيت جينز كلاسيكي', 'cat-fashion', 5600, undefined, 14, [img('1543076447-215ad9ba6923'), img('1544022613-e87ca75a784a')], 'جاكيت جينز بقصة كلاسيكية سهلة التنسيق مع مختلف الإطلالات.', {
-  rating: 4.4,
-  reviewsCount: 27,
-  soldCount: 95,
-  variants: size([['S', 3], ['M', 6], ['L', 5]]),
-}),
-  P('تنورة ميدي بليسيه', 'cat-fashion', 3800, 4600, 22, [img('1583496661160-fb5886a0aaaa'), img('1594633312681-425c7b97ccd1')], 'تنورة ميدي بتصميم بليسيه أنيق وخفيفة، مناسبة للعمل والمناسبات.', {
-  rating: 4.5,
-  reviewsCount: 33,
-  soldCount: 120,
-  variants: size([['S', 8], ['M', 9], ['L', 5]]),
-}),
-  P('طقم عباية عصرية', 'cat-fashion', 12500, 15000, 9, [img('1610030469983-98e550d6193c'), img('1591369822096-ffd140ec948f')], 'طقم عباية عصرية بخياطة فاخرة وتفاصيل مطرزة، قطعة أساسية أنيقة.', {
+  P('خضار مشكلة طازجة (صندوق)', 'cat-veggies', 400, undefined, 40, [img('1597362925123-77861d3fbac7'), img('1512621776951-a57141f2eefd')], 'صندوق خضار طازج مشكل من اختيار المزرعة: خس وخيار وجزر وفلفل ملون.', {
   featured: true,
-  rating: 4.9,
-  reviewsCount: 52,
-  soldCount: 160,
-  variants: size([['M', 4], ['L', 3], ['XL', 2]]),
+  rating: 4.5,
+  reviewsCount: 28,
+  soldCount: 95,
 }),
-  P('عطر زهر البرتقال 50مل', 'cat-beauty', 2900, 3600, 45, [img('1541643600914-78b084683601'), img('1592945403244-b3fbafd7f539')], 'عطر نسائي برائحة زهر البرتقال الأنيقة مع ثبات يدوم طويلاً.', {
+  P('تفاح أحمر فاخر (1 كغ)', 'cat-fruits', 350, 420, 70, [img('1568702846914-96b305d2aaeb'), img('1610832958506-aa56368176cf')], 'تفاح أحمر مقرمش وعصير، مصدر ممتاز للفيتامينات ومثالي كوجبة خفيفة.', {
   featured: true,
   rating: 4.7,
-  reviewsCount: 88,
+  reviewsCount: 55,
+  soldCount: 210,
+}),
+  P('بطيخ أحمر سكري (حبة)', 'cat-fruits', 600, undefined, 25, [img('1587049352846-4a222e784d38'), img('1519996529931-28324d5a630e')], 'بطيخ أحمر حلو ومنعش، مبرد في الأسواق ومثالي لفصل الصيف.', {
+  featured: true,
+  rating: 4.6,
+  reviewsCount: 32,
+  soldCount: 120,
+}),
+  P('حليب طازج كامل الدسم (1 ل)', 'cat-dairy', 150, undefined, 120, [img('1563636619-e9143da7973b'), img('1550583724-b2692b85b150')], 'حليب طازج كامل الدسم من مزارع محلية، مبستر ومعبأ يومياً.', {
+  featured: true,
+  rating: 4.5,
+  reviewsCount: 60,
   soldCount: 320,
 }),
-  P('أحمر شفاه مطفي طويل الثبات', 'cat-beauty', 1400, 1900, 60, [img('1586495777744-4413f21062fa'), img('1596462502278-27bfdc403348')], 'أحمر شفاه مطفي بتركيبة كريمية وثبات يصل إلى 12 ساعة، مقاوم للاحتكاك.', {
-  rating: 4.6,
-  reviewsCount: 120,
-  soldCount: 480,
-  variants: color([['وردي فاتح', '#F49AC1', 20], ['أحمر كلاسيكي', '#C0304A', 22], ['نبيتي', '#7B2A3C', 18]]),
-}),
-  P('كريم مرطب بالسيراميد', 'cat-beauty', 2600, undefined, 38, [img('1556228720-195a672e8a03'), img('1571781926291-c477ebfd024b')], 'مرطب عميق للبشرة الجافة بخلاصة السيراميد، يمنح ترطيباً يدوم 24 ساعة.', {
-  rating: 4.8,
-  reviewsCount: 74,
-  soldCount: 260,
-}),
-  P('باليت ظلال عيون 12 لون', 'cat-beauty', 3400, 4200, 25, [img('1512496015851-a90fb38ba796'), img('1583241800698-e8ab01c85b1e')], 'باليت ظلال بألوان مطفية ولامعة عالية التصبغ، ثبات طويل وسهل المزج.', {
-  featured: true,
-  rating: 4.5,
-  reviewsCount: 56,
-  soldCount: 210,
-}),
-  P('سيروم فيتامين سي المضاد للتصبغ', 'cat-beauty', 3100, 3900, 20, [img('1620916566398-39f1143ab7be'), img('1608248543803-ba4f8c70ae0b')], 'سيروم مركّز بفيتامين سي لتوحيد لون البشرة وتقليل التصبغات.', {
+  P('بيض مزرعة طازج (30 حبة)', 'cat-dairy', 750, 850, 45, [img('1506976785307-8732e854ad03'), img('1518569656558-1f25e69d93d7')], 'بيض مزرعة طازج بجودة عالية، مصدر ممتاز للبروتين.', {
   rating: 4.7,
-  reviewsCount: 45,
+  reviewsCount: 48,
   soldCount: 150,
 }),
-  P('حقيبة يد جلد صناعي', 'cat-accessories', 4800, 6000, 16, [img('1584917865442-de89df76afd3'), img('1591561954557-26941169b49e')], 'حقيبة يد أنيقة من الجلد الصناعي الفاخر بحجم عملي ومناطق تخزين متعددة.', {
+  P('لحم بقري طازج مقطع (1 كغ)', 'cat-meat', 2400, undefined, 20, [img('1544025162-d76694265947'), img('1607623814075-e51df1bdc82f')], 'لحم بقري طازج مقطع حسب الطلب، محفوظ في سلسلة تبريد كاملة.', {
   featured: true,
   rating: 4.6,
-  reviewsCount: 38,
-  soldCount: 130,
-  variants: color([['أسود', '#241C3B', 6], ['بني', '#8A5A3B', 5], ['وردي', '#F3AFC4', 5]]),
-}),
-  P('سوار ذهبي ناعم', 'cat-accessories', 2200, 2800, 40, [img('1611591437281-460bfbe1220a'), img('1599643478518-a784e5dc4c8f')], 'سوار ذهبي مطلي بتصميم ناعم يناسب جميع الإطلالات.', {
-  rating: 4.4,
-  reviewsCount: 29,
-  soldCount: 110,
-}),
-  P('نظارة شمسية UV400', 'cat-accessories', 2500, 3200, 28, [img('1511499767150-a48a237f0083'), img('1572635196237-14b3f281503f')], 'نظارة شمسية بعدسات UV400 وتصميم عصري يناسب شكل الوجه.', {
-  rating: 4.3,
-  reviewsCount: 22,
+  reviewsCount: 35,
   soldCount: 90,
-  variants: color([['أسود', '#241C3B', 14], ['بني فاتح', '#C8A27A', 14]]),
 }),
-  P('وشاح حرير مطبوع', 'cat-accessories', 1800, undefined, 35, [img('1601924994987-69e26d50dc26'), img('1520903920243-00d872a2d1c9')], 'وشاح حرير خفيف بطباعة أنثوية أنيقة، يمكن ارتداؤه بعدة طرق.', {
-  rating: 4.5,
-  reviewsCount: 18,
-  soldCount: 70,
-}),
-  P('مصباح طاولة بتصميم اسكندنافي', 'cat-home', 4200, 5200, 12, [img('1507473885765-e6ed057f782c'), img('1513506003901-1e6a229e2d15')], 'مصباح طاولة بإضاءة دافئة وهادئة وتصميم بسيط يليق بغرفة النوم أو المكتب.', {
-  rating: 4.6,
-  reviewsCount: 21,
-  soldCount: 65,
-}),
-  P('طقم أكواب سيراميك 4 قطع', 'cat-home', 2900, 3500, 24, [img('1514228742587-f67b8d1b2b14'), img('1495100497871-9c5f88d893c4')], 'طقم أكواب سيراميك يدوي الصنع بتشطيب مطفي وألوان هادئة.', {
-  featured: true,
-  rating: 4.7,
-  reviewsCount: 31,
-  soldCount: 105,
-}),
-  P('شمعة عطرية برائحة الفانيليا', 'cat-home', 1900, 2400, 33, [img('1602874801006-e26c4c5b5e8a'), img('1603006905003-be475563bc59')], 'شمعة عطرية من الشمع النباتي برائحة الفانيليا الدافئة، مدة احتراق 25 ساعة.', {
-  rating: 4.8,
-  reviewsCount: 26,
-  soldCount: 98,
-}),
-  P('سجادة زخرفية 60×90', 'cat-home', 5400, 6800, 8, [img('1600166898405-da9535204843'), img('1586023492125-27b2c045efd7')], 'سجادة زخرفية بنقوش عصرية ونسيج كثيف ناعم الملمس.', {
+  P('سمك سردين طازج (1 كغ)', 'cat-meat', 900, 1100, 30, [img('1535399831218-d5bd36d1a6b3'), img('1485921325833-c519f76c4927')], 'سردين طازج وصوله يومي من الميناء، غني بالأوميغا 3.', {
   rating: 4.4,
-  reviewsCount: 15,
-  soldCount: 48,
+  reviewsCount: 22,
+  soldCount: 75,
 }),
-  P('حذاء كاجوي مريح', 'cat-shoes', 5200, 6500, 20, [img('1543163521-1bf539c55dd2'), img('1549298916-b41d501d3772')], 'حذاء كاجوي بمرونة عالية ونعل مريح يناسب المشي الطويل والعمل اليومي.', {
+  P('خبز بلدي طازج (4 رغيف)', 'cat-bakery', 120, undefined, 100, [img('1509440159596-0249088772ff'), img('1549931319-a545dcf3bc73')], 'خبز بلدي مخبوز يومياً بالفرن البلدي، مقرمش وطازج.', {
   featured: true,
   rating: 4.7,
-  reviewsCount: 47,
-  soldCount: 175,
-  variants: size([['36', 4], ['37', 6], ['38', 6], ['39', 4]]),
+  reviewsCount: 90,
+  soldCount: 500,
 }),
-  P('كعب كلاسيكي مخملي', 'cat-shoes', 6100, 7500, 11, [img('1543163521-1bf539c55dd2'), img('1596703263926-eb0762ee17e4')], 'حذاء كعب أنيق بخامة مخملية ناعمة ومناسب للمناسبات.', {
-  rating: 4.5,
-  reviewsCount: 24,
-  soldCount: 82,
-  variants: size([['36', 3], ['37', 4], ['38', 3], ['39', 1]]),
-}),
-  P('صندل منزلي بطبقة إسفنج', 'cat-shoes', 2400, 3000, 26, [img('1560343090-f0409e92791a'), img('1603481588273-2f908a9a7a1b')], 'صندل منزلي مريح بطبقة إسفنجية سميكة وتصميم خفيف.', {
-  rating: 4.3,
-  reviewsCount: 19,
-  soldCount: 76,
-  variants: size([['36', 9], ['37', 9], ['38', 8]]),
-}),
-  P('علبة هدايا فاخرة — عطر + بلوزة', 'cat-gifts', 8900, 11000, 7, [img('1549465220-1a8b9238cd48'), img('1513885535751-8b9238bd345a')], 'علبة هدايا أنيقة تضم عطراً وبلوزة حرير مع بطاقة إهداء بخط اليد.', {
-  featured: true,
-  rating: 4.9,
-  reviewsCount: 34,
-  soldCount: 88,
-}),
-  P('دبدوب بلاش مع بطاقة إهداء', 'cat-gifts', 3300, 4000, 15, [img('1530325553246-1f1e6e04f5f4'), img('1562040506-a9b32cb51b94')], 'دبدوب ناعم مع بطاقة إهداء مخصصة، هدية مثالية لكل مناسبة.', {
-  rating: 4.8,
-  reviewsCount: 42,
+  P('كرواسون بالزبدة (4 قطع)', 'cat-bakery', 500, 600, 35, [img('1555507036-ab1f4038808a'), img('1608198093002-ad4e005484ec')], 'كرواسون فرنسي هش بالزبدة الفاخرة، مخبوز طازج صباحاً.', {
+  isNew: true,
+  rating: 4.6,
+  reviewsCount: 40,
   soldCount: 140,
 }),
-  P('صندوق شوكولاتة مشكل 24 قطعة', 'cat-gifts', 2700, undefined, 19, [img('1549007994-cb92caebd54b'), img('1481391319762-47dff72954d9')], 'صندوق شوكولاتة فاخر بتشكيلة من النكهات المميزة.', {
-  rating: 4.6,
-  reviewsCount: 23,
-  soldCount: 92,
+  P('أرز أبيض فاخر (5 كغ)', 'cat-pantry', 1100, undefined, 60, [img('1586201375761-83865001e31c'), img('1512058564366-18510be2db19')], 'أرز أبيض فاخر طويل الحبة، يناسب الأطباق اليومية والولائم.', {
+  featured: true,
+  rating: 4.7,
+  reviewsCount: 70,
+  soldCount: 260,
+}),
+  P('بهارات مشكلة (علبة تشكيلة)', 'cat-pantry', 450, 520, 55, [img('1532336414038-cf19250c5757'), img('1596040033229-a9821ebd058d')], 'تشكيلة بهارات مشكلة من السوق، تمنح أطباقك نكهة أصيلة.', {
+  rating: 4.5,
+  reviewsCount: 30,
+  soldCount: 110,
 }),
 ];
 
