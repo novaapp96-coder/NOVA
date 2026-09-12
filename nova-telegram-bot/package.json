@@ -1,0 +1,22 @@
+{
+  "name": "nova-telegram-bot",
+  "version": "1.0.0",
+  "description": "NOVA Smart Telegram Store — Telegram Bot (Phase 2: foundation, polling)",
+  "main": "telegram-bot.js",
+  "scripts": {
+    "start": "node telegram-bot.js"
+  },
+  "keywords": [
+    "telegram",
+    "nova",
+    "ecommerce"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.116.0",
+    "dotenv": "^17.4.2",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
