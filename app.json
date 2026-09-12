@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "My Cart",
-    "slug": "my-cart",
+    "name": "Nova",
+    "slug": "nova",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -16,7 +16,7 @@
       "bundleIdentifier": "dz.mycart.app"
     },
     "android": {
-      "package": "com.mycart.app",
+      "package": "com.nova.app",
       "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#FAF7FF",

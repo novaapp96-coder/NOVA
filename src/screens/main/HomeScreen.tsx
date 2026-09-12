@@ -77,7 +77,7 @@ export default function HomeScreen() {
           </View>
           <View>
             <AppText size={19} weight="bold" color={theme.c.primary}>
-              My Cart
+              Nova
             </AppText>
             <AppText size={10.5} color={theme.c.textMuted}>
               {settings.slogan}
@@ -97,10 +97,10 @@ export default function HomeScreen() {
       {/* Greeting */}
       <View style={{ gap: 4 }}>
         <AppText size={20} weight="bold">
-          مرحبًا بكِ في My Cart 💜
+          مرحبًا بكِ في Nova 💜
         </AppText>
         <AppText size={14} color={theme.c.textMuted}>
-          مرحبًا بكِ في My Cart، اكتشفي منتجاتكِ المفضلة بسهولة.{user ? `، ${user.name.split(' ')[0]}` : ''}
+          مرحبًا بكِ في Nova، اكتشفي منتجاتكِ المفضلة بسهولة.{user ? `، ${user.name.split(' ')[0]}` : ''}
         </AppText>
       </View>
 

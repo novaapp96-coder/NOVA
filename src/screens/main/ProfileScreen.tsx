@@ -147,7 +147,7 @@ export default function ProfileScreen() {
         </Pressable>
 
         <AppText size={11.5} color={theme.c.textMuted} align="center">
-          My Cart — الإصدار 1.0.0 💜
+          Nova — الإصدار 1.0.0 💜
         </AppText>
       </ScrollView>
     </Screen>

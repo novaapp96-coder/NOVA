@@ -35,7 +35,7 @@ export default function RegisterScreen({ navigation }: Props) {
 
   return (
     <Screen>
-      <ScreenHeader title="إنشاء حساب" subtitle="دقيقة واحدة وتصبحي جزءًا من My Cart" onBack={() => navigation.goBack()} />
+      <ScreenHeader title="إنشاء حساب" subtitle="دقيقة واحدة وتصبحي جزءًا من Nova" onBack={() => navigation.goBack()} />
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <ScrollView contentContainerStyle={{ padding: 20, gap: 14 }} keyboardShouldPersistTaps="handled">
           <Card style={{ gap: 14 }}>

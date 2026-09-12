@@ -161,7 +161,7 @@ export async function createSeedDB(): Promise<DBShape> {
 
   const admin: User = {
     id: 'usr-admin',
-    name: 'إدارة My Cart',
+    name: 'إدارة Nova',
     phone: '0673147281',
     email: 'admin@mycart.dz',
     passwordHash: adminAuth.hash,
@@ -206,7 +206,7 @@ export async function createSeedDB(): Promise<DBShape> {
       {
         id: uid(),
         userId: demo.id,
-        title: 'أهلًا بكِ في My Cart 💜',
+        title: 'أهلًا بكِ في Nova 💜',
         body: 'اكتشفي منتجاتنا المختارة بعناية واستمتعي بشحن مجاني للطلبات فوق 8000 دج.',
         type: 'promo',
         read: false,

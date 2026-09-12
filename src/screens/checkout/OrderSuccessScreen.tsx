@@ -52,7 +52,7 @@ export default function OrderSuccessScreen({ navigation, route }: Props) {
               تم استلام طلبكِ بنجاح 🎉
             </AppText>
             <AppText size={14.5} color={theme.c.textMuted} align="center" style={{ lineHeight: 23 }}>
-              شكرًا لاختياركِ My Cart. سيتواصل فريقنا معكِ لتأكيد الطلب، وستصلكِ إشعارات عند كل تحديث.
+              شكرًا لاختياركِ Nova. سيتواصل فريقنا معكِ لتأكيد الطلب، وستصلكِ إشعارات عند كل تحديث.
             </AppText>
           </View>
 
