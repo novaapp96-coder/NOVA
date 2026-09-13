@@ -30,6 +30,17 @@ export interface ProductInput {
   hidden: boolean;
 }
 
+export interface TelegramStatus {
+  botRunning: boolean;
+  mode: string;
+  botUsername: string | null;
+  lastUpdateAt: string | null;
+  lastError: string | null;
+  geminiConfigured: boolean;
+  botVersion: string | null;
+  updatedAt: string | null;
+}
+
 function assertAdmin(user: PublicUser | null): void {
   if (!isAdmin(user)) throw ERR.forbidden();
 }
@@ -990,5 +1001,37 @@ export const adminRepository = {
   async resetDemoData(admin: PublicUser | null): Promise<void> {
     assertAdmin(admin);
     await localDatabase.reset();
+  },
+
+  /* ------------------------------- Telegram -------------------------------- */
+
+  async getTelegramStatus(admin: PublicUser | null): Promise<TelegramStatus | null> {
+    assertAdmin(admin);
+    await latency(150);
+    if (!isSupabaseConfigured) return null;
+    try {
+      const { data, error } = await supabase
+        .from('telegram_status')
+        .select(
+          'bot_running, mode, bot_username, last_update_at, last_error, gemini_configured, bot_version, updated_at',
+        )
+        .eq('id', 1)
+        .maybeSingle();
+      if (error) throw error;
+      if (!data) return null;
+      return {
+        botRunning: data.bot_running === true,
+        mode: data.mode || 'polling',
+        botUsername: data.bot_username || null,
+        lastUpdateAt: data.last_update_at || null,
+        lastError: data.last_error || null,
+        geminiConfigured: data.gemini_configured === true,
+        botVersion: data.bot_version || null,
+        updatedAt: data.updated_at || null,
+      };
+    } catch (e) {
+      logError('getTelegramStatus', e);
+      return null;
+    }
   },
 };

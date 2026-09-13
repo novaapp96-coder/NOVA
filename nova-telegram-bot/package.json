@@ -4,7 +4,8 @@
   "description": "NOVA Smart Telegram Store — Telegram Bot (Phase 2: foundation, polling)",
   "main": "telegram-bot.js",
   "scripts": {
-    "start": "node telegram-bot.js"
+    "start": "node telegram-bot.js",
+    "test": "node test/run-tests.js"
   },
   "keywords": [
     "telegram",
@@ -15,6 +16,7 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
     "@supabase/supabase-js": "^2.116.0",
     "dotenv": "^17.4.2",
     "node-telegram-bot-api": "^0.66.0"

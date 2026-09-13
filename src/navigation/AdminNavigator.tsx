@@ -13,6 +13,7 @@ import AdminCouponsScreen from '../screens/admin/AdminCouponsScreen';
 import AdminCustomersScreen from '../screens/admin/AdminCustomersScreen';
 import AdminNotificationsScreen from '../screens/admin/AdminNotificationsScreen';
 import AdminSettingsScreen from '../screens/admin/AdminSettingsScreen';
+import AdminTelegramScreen from '../screens/admin/AdminTelegramScreen';
 import type { AdminStackParamList } from './types';
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
@@ -60,6 +61,7 @@ export default function AdminNavigator() {
         <Stack.Screen name="AdminCustomers" component={AdminCustomersScreen} />
         <Stack.Screen name="AdminNotifications" component={AdminNotificationsScreen} />
         <Stack.Screen name="AdminSettings" component={AdminSettingsScreen} />
+        <Stack.Screen name="AdminTelegram" component={AdminTelegramScreen} />
       </Stack.Navigator>
     </AdminGuard>
   );

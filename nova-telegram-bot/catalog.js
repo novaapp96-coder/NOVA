@@ -55,6 +55,36 @@ async function searchProducts(query, limit = 10) {
   return data || [];
 }
 
+/** Home listing: available products across all categories (best-selling). */
+async function getAllProducts(limit = 50) {
+  const { data, error } = await supabase
+    .from('products')
+    .select('id, name, category_id, price, old_price, description, images, stock, hidden, sold_count')
+    .eq('hidden', false)
+    .order('sold_count', { ascending: false })
+    .limit(limit);
+  if (error) {
+    console.error('[catalog] getAllProducts error:', error.message || error);
+    return [];
+  }
+  return (data || []).filter((p) => (p.stock ?? 0) > 0);
+}
+
+/** Fetch one sellable product by id (hidden=false). Null when missing/hidden. */
+async function getProductById(productId) {
+  const { data, error } = await supabase
+    .from('products')
+    .select('id, name, category_id, price, old_price, description, images, stock, hidden')
+    .eq('id', productId)
+    .eq('hidden', false)
+    .maybeSingle();
+  if (error) {
+    console.error('[catalog] getProductById error:', error.message || error);
+    return null;
+  }
+  return data;
+}
+
 function formatPrice(p) {
   const price = Number(p.price);
   const old = p.old_price != null ? Number(p.old_price) : null;
@@ -73,5 +103,8 @@ module.exports = {
   getCategories,
   getProductsByCategory,
   searchProducts,
+  getProductById,
+  getAllProducts,
+  formatPrice,
   productCaption,
 };

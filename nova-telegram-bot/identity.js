@@ -134,10 +134,52 @@ async function setSessionState(telegramId, chatId, state, contextPatch) {
   }
 }
 
+/** Reset the conversation state and wipe the stored context (no secrets stored anyway). */
+async function clearSessionContext(telegramId, chatId, state = 'idle') {
+  const { error } = await supabase
+    .from('telegram_sessions')
+    .update({ state, context: {}, last_message_at: new Date().toISOString() })
+    .eq('telegram_id', telegramId)
+    .eq('chat_id', chatId);
+  if (error) {
+    console.error('[identity] clearSessionContext error:', error.message || error);
+  }
+}
+
+/** All telegram_accounts rows that are linked to an internal user (for the notification bridge). */
+async function getLinkedAccounts(limit = 200) {
+  const { data, error } = await supabase
+    .from('telegram_accounts')
+    .select('telegram_id, user_id')
+    .not('user_id', 'is', null)
+    .limit(limit);
+  if (error) {
+    console.error('[identity] getLinkedAccounts error:', error.message || error);
+    return [];
+  }
+  return data || [];
+}
+
+/** All sessions for a telegram id (a user may chat in several chats). */
+async function getSessionsForTelegram(telegramId) {
+  const { data, error } = await supabase
+    .from('telegram_sessions')
+    .select('chat_id, state, context')
+    .eq('telegram_id', telegramId);
+  if (error) {
+    console.error('[identity] getSessionsForTelegram error:', error.message || error);
+    return [];
+  }
+  return data || [];
+}
+
 module.exports = {
   findTelegramAccount,
   findOrCreateTelegramAccount,
   linkByEmail,
   getSession,
   setSessionState,
+  clearSessionContext,
+  getLinkedAccounts,
+  getSessionsForTelegram,
 };

@@ -50,6 +50,7 @@ export default function AdminDashboardScreen() {
     { icon: 'account-group-outline', label: 'العميلات', go: () => navigation.navigate('AdminCustomers') },
     { icon: 'bell-ring-outline', label: 'إشعار جديد', go: () => navigation.navigate('AdminNotifications') },
     { icon: 'cog-outline', label: 'الإعدادات', go: () => navigation.navigate('AdminSettings') },
+    { icon: 'send-outline', label: 'تيليجرام', go: () => navigation.navigate('AdminTelegram') },
   ];
 
   return (

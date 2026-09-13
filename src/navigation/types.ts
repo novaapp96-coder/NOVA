@@ -39,4 +39,5 @@ export type AdminStackParamList = {
   AdminCustomers: undefined;
   AdminNotifications: undefined;
   AdminSettings: undefined;
+  AdminTelegram: undefined;
 };
