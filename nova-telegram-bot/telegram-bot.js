@@ -754,10 +754,20 @@ bot.on('message', async (msg) => {
     }
     return;
   }
-  // Otherwise → NOVA AI agent (plain catalog search as fallback when GEMINI_API_KEY is missing).
+  // Otherwise → NOVA AI agent (Multi-AI failover: Gemini → OpenRouter → Groq;
+  // plain catalog search as local fallback when every provider is unavailable).
   if (msg.text.length < 2) return;
   await bot.sendChatAction(chatId, 'typing').catch(() => {});
-  const agentReply = await agent.reply({ telegramId, chatId, text: msg.text });
+  let agentReply = null;
+  try {
+    agentReply = await agent.reply({ telegramId, chatId, text: msg.text });
+  } catch (err) {
+    // AI-layer failures must NEVER reach unhandledRejection: log safely,
+    // then answer with a short Arabic line — never a stack trace.
+    console.error('[bot] agent failure (safely handled):', (err && err.message) || err);
+    await bot.sendMessage(chatId, '⏳ لحظة فقط، الخدمة مشغولة حالياً. عاود المحاولة بعد قليل 🙏');
+    return;
+  }
   if (agentReply.mode === 'search') {
     if (!agentReply.products || agentReply.products.length === 0) {
       await bot.sendMessage(chatId, `🔎 لا توجد نتائج لـ "${msg.text}". جرّب كلمة أخرى.`);

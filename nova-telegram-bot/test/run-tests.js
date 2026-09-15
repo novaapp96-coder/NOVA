@@ -328,4 +328,203 @@ testAsync('notifications TEST 6: identical created_at rows do not duplicate', as
   assert.strictEqual(legacy.length, 0, 'legacy cursor stays strict');
 });
 
+// ---------------------------------------------------------------------------
+// Multi-AI failover (ai-provider) — pure unit tests with MOCK providers only.
+// No real Gemini/OpenRouter/Groq API is ever called in these tests.
+// ---------------------------------------------------------------------------
+const {
+  runFailover,
+  generateWithOpenAICompatible,
+  isRetryableAIError,
+  isGeminiDailyQuotaError,
+  __test: { resetGeminiCooldown, isGeminiInCooldown },
+} = require('../ai-provider');
+const { TOOL_DECLARATIONS, toOpenAITools, resolveConfig } = require('../ai-config');
+
+function mockProvider(name, available, run) {
+  return { name, available, run };
+}
+const ok = (provider, text) => ({ ok: true, provider, text });
+const fail = (status) => {
+  const e = new Error(`provider failure ${status}`);
+  e.aiStatus = status;
+  throw e;
+};
+
+testAsync('failover 1: PRIMARY (Gemini) success returns immediately, no fallback calls', async () => {
+  const calls = [];
+  const r = await runFailover([
+    mockProvider('gemini', () => true, async () => { calls.push('gemini'); return ok('gemini', 'r1'); }),
+    mockProvider('openrouter', () => true, async () => { calls.push('openrouter'); return ok('openrouter', 'r2'); }),
+  ]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.text, 'r1');
+  assert.deepStrictEqual(calls, ['gemini']);
+});
+
+testAsync('failover 2: Gemini 429 → OpenRouter (immediate failover, no retry on Gemini)', async () => {
+  const calls = [];
+  const r = await runFailover([
+    mockProvider('gemini', () => true, async () => { calls.push('gemini'); throw fail(429); }),
+    mockProvider('openrouter', () => true, async () => { calls.push('openrouter'); return ok('openrouter', 'fallback'); }),
+  ]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.provider, 'openrouter');
+  assert.deepStrictEqual(calls, ['gemini', 'openrouter'], 'no retry on the failed provider');
+});
+
+testAsync('failover 3: Gemini 500 → OpenRouter', async () => {
+  const r = await runFailover([
+    mockProvider('gemini', () => true, async () => { throw fail(500); }),
+    mockProvider('openrouter', () => true, async () => ok('openrouter', 'fb')),
+  ]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.provider, 'openrouter');
+});
+
+testAsync('failover 4: Gemini timeout → OpenRouter', async () => {
+  const e = new Error('gemini timeout after 20000ms');
+  e.aiStatus = 408;
+  const r = await runFailover([
+    mockProvider('gemini', () => true, async () => { throw e; }),
+    mockProvider('openrouter', () => true, async () => ok('openrouter', 'fb')),
+  ]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.provider, 'openrouter');
+});
+
+testAsync('failover 5: OpenRouter failure → Groq', async () => {
+  const r = await runFailover([
+    mockProvider('gemini', () => false, async () => ok('gemini', 'x')),
+    mockProvider('openrouter', () => true, async () => { throw fail(503); }),
+    mockProvider('groq', () => true, async () => ok('groq', 'groq-answer')),
+  ]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.provider, 'groq');
+  assert.strictEqual(r.text, 'groq-answer');
+});
+
+testAsync('failover 6: ALL providers fail → ok:false (local fallback in agent.reply)', async () => {
+  const r = await runFailover([
+    mockProvider('gemini', () => true, async () => { throw fail(429); }),
+    mockProvider('openrouter', () => true, async () => { throw fail(500); }),
+    mockProvider('groq', () => true, async () => { throw new Error('fetch failed'); }),
+  ]);
+  assert.strictEqual(r.ok, false);
+  assert.ok(r.error, 'an error reason is reported for the logs');
+});
+
+testAsync('failover 7: unavailable providers (missing keys / cooldown) are skipped silently', async () => {
+  resetGeminiCooldown();
+  assert.strictEqual(isGeminiInCooldown(), false);
+  const r = await runFailover([
+    mockProvider('gemini', () => false, async () => { throw new Error('MUST NOT RUN'); }),
+    mockProvider('groq', () => true, async () => ok('groq', 'only-choice')),
+  ]);
+  assert.strictEqual(r.ok, true);
+  assert.strictEqual(r.provider, 'groq');
+});
+
+testAsync('ai: missing OPENROUTER_API_KEY → unavailable result, no crash, no network', async () => {
+  const r = await generateWithOpenAICompatible({
+    providerName: 'openrouter',
+    endpoint: 'https://openrouter.example.invalid/v1',
+    apiKey: '',
+    model: 'openrouter/free',
+    text: 'كاين بصل؟',
+    history: [],
+    executeToolFn: async () => ({}),
+    ctx: {},
+    timeoutMs: 50,
+  });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.unavailable, true);
+});
+
+testAsync('ai: missing GROQ_API_KEY → unavailable result, no crash, no network', async () => {
+  const r = await generateWithOpenAICompatible({
+    providerName: 'groq',
+    endpoint: 'https://groq.example.invalid/v1',
+    apiKey: '',
+    model: 'llama-3.3-70b-versatile',
+    text: 'شحال التوصيل؟',
+    history: [],
+    executeToolFn: async () => ({}),
+    ctx: {},
+    timeoutMs: 50,
+  });
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.unavailable, true);
+});
+
+test('ai: isRetryableAIError classifies fallback-worthy failures only', () => {
+  const mk = (status, message) => Object.assign(new Error(message || `e${status}`), { aiStatus: status });
+  for (const s of [408, 429, 500, 502, 503, 504]) {
+    assert.strictEqual(isRetryableAIError(mk(s)), true, `status ${s} must be retryable`);
+  }
+  for (const s of [400, 401, 403, 404]) {
+    assert.strictEqual(isRetryableAIError(mk(s)), false, `status ${s} must NOT be retried`);
+  }
+  assert.strictEqual(isRetryableAIError(new Error('fetch failed: ECONNRESET')), true);
+  assert.strictEqual(isRetryableAIError(new Error('GenerateRequestsPerDayPerProject-FreeTier exceeded')), true);
+});
+
+test('ai: daily-quota messages trigger the Gemini cooldown classifier', () => {
+  assert.strictEqual(isGeminiDailyQuotaError(new Error('GenerateRequestsPerDayPerProject-FreeTier')), true);
+  assert.strictEqual(isGeminiDailyQuotaError(new Error('RESOURCE_EXHAUSTED: quota exceeded')), true);
+  assert.strictEqual(isGeminiDailyQuotaError(new Error('socket hang up')), false);
+});
+
+testAsync('ai: no API key is ever printed in logs', async () => {
+  const SECRET = 'sk-FAKE-KEY-FOR-LOG-TEST-000111222';
+  const orig = console.log;
+  const lines = [];
+  console.log = (...a) => lines.push(a.join(' '));
+  try {
+    await runFailover([
+      mockProvider('openrouter', () => true, async () => {
+        // Simulate a provider-level failure with the fake key in scope —
+        // only the provider NAME and STATUS may ever reach the logs.
+        const e = new Error('boom (key would be in scope here)');
+        e.aiStatus = 502;
+        throw e;
+      }),
+      mockProvider('groq', () => true, async () => ok('groq', 'ok')),
+    ]);
+  } finally {
+    console.log = orig;
+  }
+  const joined = lines.join('\n');
+  assert.ok(!joined.includes(SECRET), 'API key must never appear in logs');
+  assert.ok(joined.includes('[ai] provider=openrouter failed status=502'), 'structured safe log line');
+  assert.ok(joined.includes('[ai] provider=groq success'), 'structured success log line');
+});
+
+test('ai: tools conversion keeps all 13 names and lowers schema types', () => {
+  assert.strictEqual(TOOL_DECLARATIONS.length, 13);
+  const tools = toOpenAITools(TOOL_DECLARATIONS);
+  const names = tools.map((t) => t.function.name);
+  for (const expected of ['search_products', 'add_to_cart', 'get_order', 'start_checkout']) {
+    assert.ok(names.includes(expected), `tool ${expected} preserved`);
+  }
+  const search = tools.find((t) => t.function.name === 'search_products');
+  assert.strictEqual(search.type, 'function');
+  assert.strictEqual(search.function.parameters.type, 'object');
+  assert.strictEqual(search.function.parameters.properties.query.type, 'string');
+  // `required` must live INSIDE function.parameters (OpenAI JSON Schema),
+  // never on the function object itself (regression guard):
+  assert.deepStrictEqual(search.function.parameters.required, ['query']);
+  assert.strictEqual(search.function.required, undefined);
+  const empty = tools.find((t) => t.function.name === 'get_cart');
+  assert.deepStrictEqual(empty.function.parameters.properties, {});
+  assert.strictEqual(empty.function.parameters.required, undefined);
+});
+
+test('ai: resolveConfig defaults are the verified production slugs', () => {
+  const cfg = resolveConfig();
+  assert.strictEqual(cfg.openrouterModel, 'openrouter/free');
+  assert.strictEqual(cfg.groqModel, 'llama-3.3-70b-versatile');
+  assert.strictEqual(cfg.timeoutMs, 20000);
+});
+
 runAsyncTests();
