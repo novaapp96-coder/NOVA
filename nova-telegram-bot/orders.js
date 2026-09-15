@@ -1,176 +1,139 @@
 /**
- * NOVA — Orders layer (Phase B: checkout + order creation)
- * Uses the SAME Supabase tables as the mobile app: orders + order_items (+ cart).
- * Server-side checkout: prices/stock are ALWAYS re-read from the DB at order time.
- * Delivery fee is a backend constant (env DELIVERY_FEE, default 500 DZD) — never trusted from the client.
+ * NOVA - Orders layer (Phase 12: atomic checkout).
+ * Order creation goes through the PostgreSQL RPC `create_order_p`
+ * (migration 005): ONE transaction locks the cart and the product rows,
+ * re-reads prices/stock from the database, inserts the order + the
+ * order_items snapshot, decrements stock and clears the cart.
+ * Any failure = full ROLLBACK: no partial order, no orphan stock change,
+ * cart stays untouched.
+ *
+ * RPC signature (must match supabase/migrations/005_atomic_create_order.sql):
+ *   create_order_p(p_user_id uuid, p_customer_name text, p_phone text,
+ *     p_wilaya text, p_commune text, p_address text, p_notes text,
+ *     p_coupon_code text)
+ *     -> json { ok, order_id, subtotal, delivery_fee, discount, total, items_count }
+ * COD only: the payment method is fixed server-side inside the RPC.
+ * No address_id: orders carry the customer/address snapshot directly.
+ * The notification is written HERE after the RPC succeeds (never duplicated).
  */
 
 const { createClient } = require('@supabase/supabase-js');
-const { getCartItems, clearCart } = require('./cart');
+const { getCartItems } = require('./cart');
 
 const supabase = createClient(
   process.env.SUPABASE_URL || '',
   process.env.SUPABASE_KEY || '',
 );
 
-/** Backend delivery fee (DeliveryService abstraction, v1: flat fee). */
+/** Backend delivery fee (server-side constant; never trusted from the client). */
 function getDeliveryFee() {
   const n = Number(process.env.DELIVERY_FEE);
   return Number.isFinite(n) && n > 0 ? n : 500;
 }
 
-/**
- * Generate a readable, unique order number: NOVA-000001, NOVA-000002, ...
- * Sequential (count + 1) with collision retry. Falls back to a time-based
- * suffix if the counter keeps colliding (practically impossible at this scale).
- */
-async function generateOrderNumber() {
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    const { count, error } = await supabase
-      .from('orders')
-      .select('id', { count: 'exact', head: true });
-    if (error) {
-      console.error('[orders] count error:', error.message || error);
-      return null;
+/** Arabic labels for the 6 allowed order statuses (migration 004 CHECK). */
+const STATUS_LABELS = {
+  received: 'قيد الاستلام',
+  confirmed: 'مؤكد',
+  preparing: 'قيد التحضير',
+  out_for_delivery: 'في الطريق',
+  delivered: 'تم التوصيل',
+  cancelled: 'ملغى',
+};
+
+
+/** Pre-flight stock check with precise product info for the UI message. */
+async function findStockProblem(userId) {
+  const { items } = await getCartItems(userId);
+  for (const l of items || []) {
+    if (Number(l.quantity) > Number(l.product.stock ?? 0)) {
+      return { name: l.product.name, available: l.product.stock ?? 0 }; 
     }
-    const candidate = `NOVA-${String((count || 0) + 1 + attempt).padStart(6, '0')}`;
-    const { data: existing } = await supabase
-      .from('orders')
-      .select('id')
-      .eq('id', candidate)
-      .maybeSingle();
-    if (!existing) return candidate;
   }
-  return `NOVA-T${Date.now().toString().slice(-8)}`;
+  return null;
 }
 
-/** Restore stock after a failed partial decrement (best effort). */
-async function restoreStock(entries) {
-  for (const e of entries) {
-    // eslint-disable-next-line no-await-in-loop
-    const { data: p } = await supabase
-      .from('products')
-      .select('stock')
-      .eq('id', e.productId)
-      .maybeSingle();
-    if (p) {
-      // eslint-disable-next-line no-await-in-loop
-      await supabase
-        .from('products')
-        .update({ stock: Number(p.stock) + e.qty })
-        .eq('id', e.productId);
-    }
+/** Map RPC error messages to bot-facing reasons. */
+function mapRpcError(message) {
+  const m = String(message || '');
+  if (m.includes('cart_empty')) return { ok: false, reason: 'empty_cart' };
+  if (m.includes('insufficient_stock') || m.includes('product_hidden') ||
+      m.includes('product_not_found') || m.includes('variant_not_found') ||
+      m.includes('variant_product_mismatch') || m.includes('variant_out_of_stock')) {
+    return { ok: false, reason: 'stock', problem: { name: 'أحد منتجات سلتك', available: 0 } };
   }
+  if (m.includes('missing_customer_name') || m.includes('missing_phone') ||
+      m.includes('missing_wilaya') || m.includes('missing_commune') ||
+      m.includes('missing_address')) {
+    return { ok: false, reason: 'customer_data' };
+  }
+  if (m.includes('invalid_coupon')) return { ok: false, reason: 'coupon' };
+  if (m.includes('coupon_min_not_met')) return { ok: false, reason: 'coupon_min' };
+  if (m.includes('invalid_user')) return { ok: false, reason: 'user' };
+  return { ok: false, reason: 'db' };
 }
 
 /**
- * Create an order (guarded, rollback-on-failure):
- *   1) Fresh cart read (prices from DB).
- *   2) Stock validation for every line.
- *   3) Guarded stock decrements (optimistic lock on current stock value).
- *   4) Insert order (NOVA-XXXXXX) + order_items snapshot.
- *   5) On any failure → restore stock (+ delete the order row) and report.
- *   6) Clear the cart only after full success.
+ * Atomic checkout via the create_order_p RPC (8-param signature).
+ * `customer` carries the checkout values collected in the bot session:
+ *   { name, phone, wilaya, commune, address, notes, couponCode }
+ * The RPC validates the user + all customer fields, locks the cart and the
+ * product/variant rows, and does everything in ONE transaction.
+ * Returns { ok:true, orderId, subtotal, deliveryFee, discount, total, itemsCount }
+ * or { ok:false, reason } (empty_cart | stock | customer_data | coupon | coupon_min | user | db).
  */
 async function createOrder(userId, customer) {
-  const { items, subtotal } = await getCartItems(userId);
+  const c = customer || {};
+  const { items } = await getCartItems(userId);
   if (!items || items.length === 0) return { ok: false, reason: 'empty_cart' };
 
-  for (const l of items) {
-    if (Number(l.quantity) > Number(l.product.stock ?? 0)) {
-      return {
-        ok: false,
-        reason: 'stock',
-        problem: { name: l.product.name, available: l.product.stock ?? 0 },
-      };
-    }
+  const preflight = await findStockProblem(userId);
+  if (preflight) return { ok: false, reason: 'stock', problem: preflight };
+
+  const { data, error } = await supabase.rpc('create_order_p', {
+    p_user_id: userId,
+    p_customer_name: String(c.name || ''),
+    p_phone: String(c.phone || ''),
+    p_wilaya: String(c.wilaya || ''),
+    p_commune: String(c.commune || ''),
+    p_address: String(c.address || ''),
+    p_notes: c.notes || null,
+    p_coupon_code: c.couponCode || null,
+  });
+  if (error) {
+    console.error('[orders] create_order_p error:', error.message || error);
+    return mapRpcError(error.message || error);
+  }
+  if (!data || data.ok !== true) return { ok: false, reason: 'db' };
+
+  // Success: write the notification here (the RPC never duplicates it).
+  const { error: notifErr } = await supabase.from('notifications').insert({
+    user_id: userId,
+    order_id: data.order_id,
+    title: 'تم استلام طلبك بنجاح',
+    body: `طلبك ${data.order_id} قيد المعالجة الآن. الإجمالي: ${data.total} دج.`,
+  });
+  if (notifErr) {
+    // Notification failure must NOT fail an already-committed order.
+    console.error('[orders] notification insert error:', notifErr.message || notifErr);
   }
 
-  const deliveryFee = getDeliveryFee();
-  const total = subtotal + deliveryFee;
-
-  // Guarded decrements — stock may change between check and write; the optimistic lock catches it.
-  const decremented = [];
-  for (const l of items) {
-    const current = Number(l.product.stock ?? 0);
-    const { data: updated, error } = await supabase
-      .from('products')
-      .update({ stock: current - Number(l.quantity) })
-      .eq('id', l.product_id)
-      .eq('stock', current)
-      .select('id');
-    if (error || !updated || updated.length === 0) {
-      if (error) console.error('[orders] stock decrement error:', error.message || error);
-      await restoreStock(decremented);
-      return {
-        ok: false,
-        reason: 'stock',
-        problem: { name: l.product.name, available: current },
-      };
-    }
-    decremented.push({ productId: l.product_id, qty: Number(l.quantity) });
-  }
-
-  // Order row (status/payment values match the schema CHECK constraints).
-  const orderNumber = await generateOrderNumber();
-  if (!orderNumber) {
-    await restoreStock(decremented);
-    return { ok: false, reason: 'db' };
-  }
-  const { error: orderError } = await supabase
-    .from('orders')
-    .insert({
-      id: orderNumber,
-      user_id: userId,
-      status: 'received',
-      customer_name: String(customer.name || ''),
-      phone: String(customer.phone || ''),
-      wilaya: String(customer.wilaya || ''),
-      commune: String(customer.commune || ''),
-      address: String(customer.address || ''),
-      subtotal,
-      delivery_fee: deliveryFee,
-      discount: 0,
-      total,
-      payment_method: 'cod',
-    })
-    .select('id')
-    .single();
-  if (orderError) {
-    console.error('[orders] insert order error:', orderError.message || orderError);
-    await restoreStock(decremented);
-    return { ok: false, reason: 'db' };
-  }
-
-  // Items snapshot — the invoice never changes even if products change later.
-  const { error: itemsError } = await supabase.from('order_items').insert(
-    items.map((l) => ({
-      order_id: orderNumber,
-      product_id: l.product_id,
-      product_name: l.product.name || '',
-      product_image: (Array.isArray(l.product.images) && l.product.images[0]) || '',
-      quantity: Number(l.quantity),
-      unit_price: Number(l.product.price),
-      total: Number(l.product.price) * Number(l.quantity),
-    })),
-  );
-  if (itemsError) {
-    console.error('[orders] insert items error:', itemsError.message || itemsError);
-    await supabase.from('orders').delete().eq('id', orderNumber);
-    await restoreStock(decremented);
-    return { ok: false, reason: 'db' };
-  }
-
-  // Success → clear the cart.
-  await clearCart(userId);
-  return { ok: true, orderNumber, subtotal, deliveryFee, total, itemsCount: items.length };
+  return {
+    ok: true,
+    orderId: data.order_id,
+    subtotal: Number(data.subtotal),
+    deliveryFee: Number(data.delivery_fee),
+    discount: Number(data.discount),
+    total: Number(data.total),
+    itemsCount: Number(data.items_count),
+  };
 }
 
 /** Recent orders of a user (newest first). */
 async function getRecentOrders(userId, limit = 5) {
   const { data, error } = await supabase
     .from('orders')
-    .select('id, status, total, created_at')
+    .select('id, status, total, subtotal, delivery_fee, payment_method, created_at')
     .eq('user_id', userId)
     .order('created_at', { ascending: false })
     .limit(limit);
@@ -181,44 +144,38 @@ async function getRecentOrders(userId, limit = 5) {
   return data || [];
 }
 
-/** One order of a user with its items snapshot (authorization: scoped by userId). */
+/**
+ * One order + its items, scoped to the owner (authorization in the query).
+ * Used by the bot detail view and the AI agent get_order tool.
+ */
 async function getOrderDetail(userId, orderId) {
-  const { data: order, error } = await supabase
+  // Orders carry the customer/address snapshot directly (REAL SCHEMA v2 — no address_id).
+  const { data: order } = await supabase
     .from('orders')
-    .select(
-      'id, status, total, subtotal, delivery_fee, customer_name, phone, wilaya, commune, address, payment_method, created_at',
-    )
+    .select('id, status, customer_name, phone, wilaya, commune, address, subtotal, delivery_fee, discount, total, payment_method, created_at')
     .eq('id', orderId)
     .eq('user_id', userId)
     .maybeSingle();
-  if (error) {
-    console.error('[orders] getOrderDetail error:', error.message || error);
-    return null;
-  }
   if (!order) return null;
-  const { data: items, error: itemsError } = await supabase
+
+  const { data: items } = await supabase
     .from('order_items')
-    .select('product_name, product_image, quantity, unit_price, total')
+    .select('product_name, product_image, variant_labels, quantity, unit_price, total')
     .eq('order_id', orderId);
-  if (itemsError) {
-    console.error('[orders] getOrderDetail items error:', itemsError.message || itemsError);
-  }
+
   return { order, items: items || [] };
 }
 
-/**
- * App notifications for a user created after `sinceIso` (oldest first).
- * The Telegram bridge reads these WITHOUT marking them read, so the in-app
- * notification screen keeps working as before.
- */
+/** Unread notifications for the bot bridge (never marked as read here). */
 async function getUserNotifications(userId, sinceIso, limit = 10) {
-  const { data, error } = await supabase
+  let q = supabase
     .from('notifications')
-    .select('id, title, body, order_id, created_at')
+    .select('id, order_id, title, body, created_at')
     .eq('user_id', userId)
-    .gt('created_at', sinceIso)
     .order('created_at', { ascending: true })
     .limit(limit);
+  if (sinceIso) q = q.gte('created_at', sinceIso);
+  const { data, error } = await q;
   if (error) {
     console.error('[orders] getUserNotifications error:', error.message || error);
     return [];
@@ -226,20 +183,11 @@ async function getUserNotifications(userId, sinceIso, limit = 10) {
   return data || [];
 }
 
-const STATUS_LABELS = {
-  received: 'قيد المراجعة',
-  confirmed: 'مؤكد',
-  preparing: 'قيد التحضير',
-  shipped: 'في الطريق',
-  out_for_delivery: 'في الطريق',
-  delivered: 'تم التسليم',
-  cancelled: 'ملغى',
-};
-
 module.exports = {
+  STATUS_LABELS,
   getDeliveryFee,
-  generateOrderNumber,
   createOrder,
   getRecentOrders,
-  STATUS_LABELS,
+  getOrderDetail,
+  getUserNotifications,
 };

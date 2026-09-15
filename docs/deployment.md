@@ -23,28 +23,65 @@
 
 ممنوع على أي خادم/واجهة عرض: التوكنات، المفاتيح، روابط DB، أسرار الدفع.
 
-## 3. وضع Webhook (الإنتاج) — خطة التنفيذ
+## 3. وضع Webhook (الإنتاج) — مُنفَّذ في Phase 14
 
-التطوير الحالي polling. للإنتاج:
-1. استضف البوت (أو بجوار الـ Mini App) على HTTPS.
-2. أضف نقطة `POST /api/telegram/webhook` (في `miniapp.js` — نفس خادم HTTP):
-   - تحقق `X-Telegram-Bot-Api-Secret-Token` مقابل `TELEGRAM_WEBHOOK_SECRET`.
-   - Idempotency: خزّن `update_id` المعالجة (جدول صغير أو Set بمهلة) —
-     تيليجرام قد يعيد الإرسال؛ الرد `200` فوراً ثم المعالجة غير المتزامنة.
-3. سجّل الـ webhook:
-   `https://api.telegram.org/bot<TOKEN>/setWebhook?url=<URL>/api/telegram/webhook&secret_token=<SECRET>`
-4. أوقف polling (`deleteWebhook` قبل التبديل، و`deleteMessage` غير مطلوبة).
-5. للأمان عطّل polling في الكود عند `BOT_MODE=webhook`.
+الوضع محسوم في `telegram-bot.js` عبر `BOT_MODE` (المعالجات واحدة ولا تُكرَّر):
 
-## 4. استضافة الـ Mini App
+```text
+BOT_MODE=polling   ← التطوير المحلي (القيمة الافتراضية)
+BOT_MODE=webhook   ← الاستضافة 24/24 (Koyeb/Render/Railway)
+```
 
-- أي HTTPS ثابت (Render/Fly/VPS) يشغّل `node telegram-bot.js` مع
-  `MINIAPP_PORT` مكشوف خلف بروكسي.
-- اربط الرابط في BotFather → `/setmenubutton`.
-- `verifyInitData` يفرض توقيعاً صالحاً — لا مفاتيح في الصفحة.
-- الموقع لا يكتب طلبات — إنشاؤها في المحادثة فقط (مراجعة `docs/orders.md`).
+خادم HTTP موحّد واحد (`server.js`) على منفذ واحد يخدم كل المسارات:
 
-## 5. فحوص قبل الإطلاق
+```text
+GET  /health                       → فحص حيّة (لا يلمس Supabase ولا Telegram)
+GET  /miniapp                      → صفحة Mini App
+     /api/miniapp/*                → API صفحة Mini App
+POST /telegram/webhook/<secret>    → تحديثات تيليجرام (وضع webhook فقط)
+```
+
+- السر: `TELEGRAM_WEBHOOK_SECRET` — **إلزامي ≥ 16 حرفاً** في وضع webhook، وإلا
+  **يرفض البوت الإقلاع** (exit 1) بدل فتح endpoint غير محمي. لا يوضع التوكن في URL.
+- التحقق: مقارنة ثابتة الزمن لترويسة `X-Telegram-Bot-Api-Secret-Token` + مسار السر.
+- التسجيل عند الإقلاع: `bot.setWebHook(...)` بـ `secret_token` و
+  `allowed_updates=['message','callback_query']`؛ العنوان الأساسي من
+  `WEBHOOK_BASE_URL` أو تلقائياً من `KOYEB_PUBLIC_DOMAIN` (يحقنها Koyeb).
+- الاستجابة `200 {"ok":true}` فوراً ثم `bot.processUpdate(update)` خارج المسار
+  الحرج؛ أي فشل في `reportStatus` (نبضة الحالة) غير حاجب ولا يوقف البوت.
+
+### 3.1 Koyeb Web Service (النشر اللاحق)
+
+| الإعداد | القيمة |
+|---|---|
+| Service type | **WEB** (لا Worker — الخطة المجانية لا تدعمه) |
+| Build command | `npm install --prefix nova-telegram-bot` |
+| Start command | `npm start --prefix nova-telegram-bot` |
+| Health check path | `/health` |
+| المنفذ | ديناميكي من `PORT` (يوفّره Koyeb؛ الافتراضي 3005) |
+| الاستماع | `0.0.0.0` ✓ |
+
+⚠️ **تنبيه:** الجذر `package.json` يعرّف `start` = `expo start` (تطبيق الهاتف).
+لذلك أمر البدء من جذر المستودع يجب أن يكون `npm start --prefix nova-telegram-bot`
+وليس `npm start` مجرداً — وإلا ستنطلق Metro بدل البوت.
+
+### 3.2 متغيرات البيئة على Koyeb (الأسماء فقط — لا قيم حقيقية في أي ملف)
+
+```text
+TELEGRAM_BOT_TOKEN       إلزامي   توكن البوت من BotFather
+BOT_MODE                 إلزامي   webhook
+TELEGRAM_WEBHOOK_SECRET  إلزامي   ≥ 16 حرفاً (مثلاً 32 hex) — سر المسار + ترويسة تيليجرام
+SUPABASE_URL             إلزامي   رابط المشروع
+SUPABASE_KEY             إلزامي   service_role (يتجاوز RLS — لا يُكشف إطلاقاً)
+GEMINI_API_KEY           إلزامي   مفتاح Gemini للوكيل الذكي
+WEBHOOK_BASE_URL         اختياري  يُستغنى عنه تلقائياً بوجود KOYEB_PUBLIC_DOMAIN
+```
+
+لا تُطبع الأسرار في السجلات (تم التحقق: التوكن والسر لا يظهران أبداً في output).
+عند اشتباه بتسريب: بدّل `TELEGRAM_WEBHOOK_SECRET` — إعادة التسجيل تحدث تلقائياً
+عند الإقلاع التالي.
+
+## 4. فحوص قبل الإطلاق
 
 - [ ] `npm test` (البوت) + `npx tsc --noEmit` (التطبيق) + `npm test` (التطبيق)
 - [ ] migrations 001→003 + السيد مُنفَّذة على قاعدة الإنتاج
@@ -54,7 +91,7 @@
 - [ ] تدوير أي مفتاح ظهر في سجلات/تاريخ Git
 - [ ] نسخة احتياطية لقاعدة Supabase مفعّلة (Dashboard → Backups)
 
-## 6. حل المشاكل
+## 5. حل المشاكل
 
 | المشكلة | الحل |
 |---|---|
@@ -65,7 +102,7 @@
 | 409 في تيليجرام | polling مزدوج — عملية واحدة فقط، أو انتقل لوضع webhook |
 | `npm test` (التطبيق، jest-expo) يفشل بـ "Cannot find module expo-modules-core" | حالة **سابقة للـ Initial commit** — الجذر: بريسيت jest-expo 57 يتطلب `expo-modules-core` غير مثبتة، وتثبيتها تصطدم بتعارض peer-dep مع `react-native-worklets`. تُعالَج في مهمة مستقلة؛ لا تُجبَر الآن كي لا تكسر شجرة الاعتماديات العاملة. (اختبارات البوت `nova-telegram-bot` تعمل: 9/9) |
 
-## 7. التكلفة
+## 6. التكلفة
 
 - Supabase: الخطة المجانية كافية للبداية (انسخ حدودها قبل النمو).
 - Gemini API: `gemini-3.6-flash` ضمن الطبقة المجانية بحدود RPM — ضوابط

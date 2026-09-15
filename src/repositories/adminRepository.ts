@@ -10,6 +10,7 @@ import type {
   Coupon,
   ID,
   Order,
+  OrderItem,
   OrderStatus,
   Product,
   ProductVariant,
@@ -46,12 +47,12 @@ function assertAdmin(user: PublicUser | null): void {
 }
 
 const STATUS_TITLES: Record<OrderStatus, string> = {
-  received: 'طھظ… ط§ط³طھظ„ط§ظ… ط·ظ„ط¨ظƒظگ âœ¨',
-  confirmed: 'طھظ… طھط£ظƒظٹط¯ ط·ظ„ط¨ظƒظگ âœ…',
-  preparing: 'ط·ظ„ط¨ظƒظگ ظ‚ظٹط¯ ط§ظ„طھط¬ظ‡ظٹط² ًں“¦',
-  out_for_delivery: 'ط·ظ„ط¨ظƒظگ ط®ط±ط¬ ظ„ظ„طھظˆطµظٹظ„ ًںڑڑ',
-  delivered: 'طھظ… طھط³ظ„ظٹظ… ط·ظ„ط¨ظƒظگ ط¨ظ†ط¬ط§ط­ ًںژ‰',
-  cancelled: 'طھظ… ط¥ظ„ط؛ط§ط، ط§ظ„ط·ظ„ط¨ â‌Œ',
+  received: 'تم استلام طلبك ✨',
+  confirmed: 'تم تأكيد طلبك ✅',
+  preparing: 'طلبك قيد التجهيز 📦',
+  out_for_delivery: 'طلبك خرج للتوصيل 🚚',
+  delivered: 'تم تسليم طلبك بنجاح 🎉',
+  cancelled: 'تم إلغاء الطلب ❌',
 };
 
 /* ------------------------------------------------------------------ */
@@ -99,7 +100,18 @@ interface SupabaseOrderRow {
   id: string;
   user_id: string;
   status: OrderStatus | null;
+  customer_name: string | null;
+  phone: string | null;
+  wilaya: string | null;
+  commune: string | null;
+  address: string | null;
+  notes: string | null;
+  subtotal: number | string | null;
+  delivery_fee: number | string | null;
+  discount: number | string | null;
   total: number | string | null;
+  coupon_code: string | null;
+  payment_method: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -189,17 +201,19 @@ function orderFromRow(row: SupabaseOrderRow): Order {
   return {
     id: row.id,
     userId: row.user_id,
-    customerName: '',
-    phone: '',
-    wilaya: '',
-    commune: '',
-    address: '',
+    customerName: String(row.customer_name ?? ''),
+    phone: String(row.phone ?? ''),
+    wilaya: String(row.wilaya ?? ''),
+    commune: String(row.commune ?? ''),
+    address: String(row.address ?? ''),
+    notes: row.notes ?? undefined,
     items: [],
-    subtotal: 0,
-    deliveryFee: 0,
-    discount: 0,
+    subtotal: Number(row.subtotal ?? 0),
+    deliveryFee: Number(row.delivery_fee ?? 0),
+    discount: Number(row.discount ?? 0),
     total: Number(row.total ?? 0),
-    paymentMethod: 'cod',
+    couponCode: row.coupon_code ?? undefined,
+    paymentMethod: (row.payment_method as 'cod') ?? 'cod',
     status: (row.status as OrderStatus) ?? 'received',
     history: [
       {
@@ -211,6 +225,27 @@ function orderFromRow(row: SupabaseOrderRow): Order {
     createdAt: row.created_at ?? new Date().toISOString(),
     updatedAt: row.updated_at ?? row.created_at ?? new Date().toISOString(),
   };
+}
+
+// order_items snapshot rows — order_id is TEXT (matched against orders.id as-is).
+interface SupabaseOrderItemRow {
+  product_id: string | null;
+  product_name: string | null;
+  product_image: string | null;
+  variant_labels: string[] | null;
+  quantity: number | string | null;
+  unit_price: number | string | null;
+}
+
+function orderItemsFromRows(rows: SupabaseOrderItemRow[]): OrderItem[] {
+  return (rows ?? []).map((it) => ({
+    productId: (it.product_id ?? '') as ID,
+    name: String(it.product_name ?? ''),
+    image: String(it.product_image ?? ''),
+    unitPrice: Number(it.unit_price ?? 0),
+    qty: Number(it.quantity ?? 0),
+    variantLabels: Array.isArray(it.variant_labels) ? it.variant_labels : [],
+  }));
 }
 
 function logError(scope: string, e: unknown): void {
@@ -315,6 +350,34 @@ export const adminRepository = {
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   },
 
+  /** ONE order (any user) + its items snapshot. orders.id stays TEXT (NOVA-XXXXXX) — no UUID/number conversion. */
+  async getOrder(admin: PublicUser | null, orderId: ID): Promise<Order | null> {
+    assertAdmin(admin);
+    await latency(180);
+    if (isSupabaseConfigured) {
+      try {
+        const [orderRes, itemsRes] = await Promise.all([
+          supabase.from('orders').select('*').eq('id', orderId).maybeSingle(),
+          supabase
+            .from('order_items')
+            .select('product_id, product_name, product_image, variant_labels, quantity, unit_price')
+            .eq('order_id', orderId),
+        ]);
+        if (orderRes.error) throw orderRes.error;
+        if (itemsRes.error) throw itemsRes.error;
+        if (!orderRes.data) return null;
+        const order = orderFromRow(orderRes.data as SupabaseOrderRow);
+        order.items = orderItemsFromRows((itemsRes.data ?? []) as SupabaseOrderItemRow[]);
+        return order;
+      } catch (e) {
+        logError('getOrder', e);
+        // fall through
+      }
+    }
+    const db = await localDatabase.read();
+    return db.orders.find((o) => o.id === orderId) ?? null;
+  },
+
   async updateOrderStatus(
     admin: PublicUser | null,
     orderId: ID,
@@ -332,7 +395,7 @@ export const adminRepository = {
           .eq('id', orderId)
           .maybeSingle();
         if (readErr) throw readErr;
-        if (!orderRow) throw ERR.notFound('ط§ظ„ط·ظ„ط¨');
+        if (!orderRow) throw ERR.notFound('الطلب');
 
         // 2. Update status
         const { data: updatedRow, error: updateErr } = await supabase
@@ -365,17 +428,20 @@ export const adminRepository = {
           }
         }
 
-        // 4. Insert notification
+        // 4. Insert notification (best effort — a failed notification must
+        //    NOT make the already-committed status update look like a failure).
         const { error: notifErr } = await supabase.from('notifications').insert({
           id: uid(),
           user_id: orderRow.user_id,
           title: STATUS_TITLES[status],
-          body: `طھظ… طھط­ط¯ظٹط« ط­ط§ظ„ط© ط·ظ„ط¨ظƒظگ ${orderRow.id}. ${note?.trim() ?? ''}`.trim(),
+          body: `تم تحديث حالة طلبك ${orderRow.id}. ${note?.trim() ?? ''}`.trim(),
           type: 'order',
           order_id: orderRow.id,
           read: false,
         });
-        if (notifErr) throw notifErr;
+        if (notifErr) {
+          console.error('[adminRepository] status notification error:', notifErr.message || notifErr);
+        }
 
         return orderFromRow(updatedRow as SupabaseOrderRow);
       } catch (e) {
@@ -388,7 +454,7 @@ export const adminRepository = {
     let updated: Order | null = null;
     await localDatabase.mutate((db) => {
       const order = db.orders.find((o) => o.id === orderId);
-      if (!order) throw ERR.notFound('ط§ظ„ط·ظ„ط¨');
+      if (!order) throw ERR.notFound('الطلب');
       order.status = status;
       const at = new Date().toISOString();
       order.history.push({ status, at, note: note?.trim() || undefined, by: 'admin' });
@@ -403,7 +469,7 @@ export const adminRepository = {
         id: uid(),
         userId: order.userId,
         title: STATUS_TITLES[status],
-        body: `طھظ… طھط­ط¯ظٹط« ط­ط§ظ„ط© ط·ظ„ط¨ظƒظگ ${order.id}. ${note?.trim() ?? ''}`.trim(),
+        body: `تم تحديث حالة طلبك ${order.id}. ${note?.trim() ?? ''}`.trim(),
         type: 'order',
         orderId: order.id,
         read: false,
@@ -412,7 +478,7 @@ export const adminRepository = {
       db.notifications.unshift(notification);
       updated = order;
     });
-    if (!updated) throw ERR.notFound('ط§ظ„ط·ظ„ط¨');
+    if (!updated) throw ERR.notFound('الطلب');
     return updated;
   },
 

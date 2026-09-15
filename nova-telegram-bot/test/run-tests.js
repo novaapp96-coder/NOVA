@@ -112,7 +112,7 @@ test('catalog: productCaption includes name, price and availability', () => {
 });
 
 test('orders: STATUS_LABELS covers all schema statuses', () => {
-  const all = ['received', 'confirmed', 'preparing', 'shipped', 'out_for_delivery', 'delivered', 'cancelled'];
+  const all = ['received', 'confirmed', 'preparing', 'out_for_delivery', 'delivered', 'cancelled'];
   for (const s of all) assert.ok(STATUS_LABELS[s], 'missing label for ' + s);
 });
 

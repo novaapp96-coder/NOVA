@@ -146,24 +146,43 @@ async function handleApi(req, res, url) {
   return json(res, 404, { error: 'not_found' });
 }
 
+/**
+ * Route a request that belongs to the Mini App (page + JSON API).
+ * Returns true when the request was handled; false lets the caller continue
+ * routing (the unified server.js) or return its own 404 (startMiniApp below).
+ * Behaviour for /miniapp and /api/miniapp/* is byte-for-byte unchanged.
+ */
+function handleMiniAppRequest(req, res) {
+  let url;
+  try {
+    url = new URL(req.url, 'http://localhost');
+  } catch {
+    json(res, 400, { error: 'bad_url' });
+    return true;
+  }
+  if (req.method === 'GET' && url.pathname === '/miniapp') {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(PAGE);
+    return true;
+  }
+  if (url.pathname.startsWith('/api/miniapp/')) {
+    handleApi(req, res, url).catch((e) => {
+      console.error('[miniapp] request error:', e?.message || e);
+      json(res, 500, { error: 'server_error' });
+    });
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Standalone Mini App server (local-dev convenience / backwards compatible).
+ * The bot entry point uses the unified server.js instead, which reuses
+ * handleMiniAppRequest — so /miniapp keeps the same URL and behaviour.
+ */
 function startMiniApp() {
   const server = http.createServer((req, res) => {
-    let url;
-    try {
-      url = new URL(req.url, 'http://localhost');
-    } catch {
-      return json(res, 400, { error: 'bad_url' });
-    }
-    if (req.method === 'GET' && url.pathname === '/miniapp') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      return res.end(PAGE);
-    }
-    if (url.pathname.startsWith('/api/miniapp/')) {
-      return handleApi(req, res, url).catch((e) => {
-        console.error('[miniapp] request error:', e?.message || e);
-        return json(res, 500, { error: 'server_error' });
-      });
-    }
+    if (handleMiniAppRequest(req, res)) return undefined;
     return json(res, 404, { error: 'not_found' });
   });
   server.listen(PORT, () => {
@@ -172,4 +191,4 @@ function startMiniApp() {
   return server;
 }
 
-module.exports = { startMiniApp, verifyInitData };
+module.exports = { startMiniApp, handleMiniAppRequest, verifyInitData };

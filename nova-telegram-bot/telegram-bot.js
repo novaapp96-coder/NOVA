@@ -1,6 +1,9 @@
 /**
- * NOVA Smart Telegram Store — Bot entry point (Phase A: foundation + cart wiring)
- * Polling mode for local dev. Webhook comes in a later phase.
+ * NOVA Smart Telegram Store — Bot entry point
+ * Transport is switchable (Phase 14): BOT_MODE=polling for local dev,
+ * BOT_MODE=webhook for always-on hosting (Koyeb/Render/Railway). The Telegram
+ * handlers below are IDENTICAL in both modes — webhook feeds them through
+ * bot.processUpdate() from server.js, so no logic is duplicated.
  * Commands: /start /help /menu. Categories + products + search + cart from Supabase.
  * Identity is persistent (telegram_accounts / telegram_sessions).
  * Prices and stock ALWAYS come from the database — never from the client.
@@ -39,7 +42,15 @@ const {
 } = require('./orders');
 const agent = require('./agent');
 const { startHeartbeat, reportStatus } = require('./status');
-const { startMiniApp } = require('./miniapp');
+const { startServer } = require('./server');
+
+// Direct client for the address insert (orders.js owns the RPC call).
+const { createClient } = require('@supabase/supabase-js');
+const supabase = createClient(
+  process.env.SUPABASE_URL || '',
+  process.env.SUPABASE_KEY || '',
+);
+
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 if (!TOKEN || TOKEN === 'put_your_token_here') {
@@ -47,10 +58,121 @@ if (!TOKEN || TOKEN === 'put_your_token_here') {
   process.exitCode = 1;
 }
 
-const bot = new TelegramBot(TOKEN, { polling: true });
-console.log('[bot] NOVA Telegram Bot started (polling).');
-if (TOKEN) startHeartbeat(bot, 60000);
-startMiniApp();
+// ---------------------------------------------------------------------------
+// Transport bootstrap: BOT_MODE=polling (local dev) | BOT_MODE=webhook (host).
+// Handlers below are transport-agnostic and never duplicated.
+// ---------------------------------------------------------------------------
+const BOT_MODE =
+  String(process.env.BOT_MODE || 'polling').toLowerCase() === 'webhook' ? 'webhook' : 'polling';
+const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET || '';
+const HTTP_PORT = Number(process.env.PORT) || Number(process.env.MINIAPP_PORT) || 3005;
+
+// Webhook mode without a secret would expose an unauthenticated update
+// endpoint: fail fast instead of serving it unprotected.
+if (BOT_MODE === 'webhook' && WEBHOOK_SECRET.length < 16) {
+  console.error('[bot] BOT_MODE=webhook requires TELEGRAM_WEBHOOK_SECRET (>= 16 chars).');
+  console.error('[bot] Refusing to start an unprotected webhook endpoint. Set it and restart.');
+  process.exit(1);
+}
+
+const bot = new TelegramBot(TOKEN, { polling: BOT_MODE === 'polling' });
+
+let notifTimer = null;
+let httpServer = null;
+let heartbeatStop = null;
+
+if (BOT_MODE === 'polling') {
+  console.log('[bot] NOVA Telegram Bot started (polling).');
+  console.log('[bot] note: a "409 Conflict" here means a webhook is still set for this token.');
+} else {
+  console.log('[bot] NOVA Telegram Bot started (webhook).');
+}
+if (TOKEN) heartbeatStop = startHeartbeat(bot, 60000);
+
+// One HTTP server for every route: GET /health (dependency-free), the Mini App
+// (/miniapp + /api/miniapp/*) and — in webhook mode only — the update endpoint.
+httpServer = startServer({
+  port: HTTP_PORT,
+  mode: BOT_MODE,
+  webhookSecret: BOT_MODE === 'webhook' ? WEBHOOK_SECRET : '',
+  onUpdate: (update) => bot.processUpdate(update),
+  log: (m) => console.log('[server] ' + m),
+});
+
+/** Public base URL of this service (Koyeb injects KOYEB_PUBLIC_DOMAIN). */
+async function registerWebhook() {
+  if (BOT_MODE !== 'webhook') return;
+  const explicit = process.env.WEBHOOK_BASE_URL || process.env.TELEGRAM_WEBHOOK_URL || '';
+  const koyebDomain = process.env.KOYEB_PUBLIC_DOMAIN || '';
+  const base = explicit || (koyebDomain ? 'https://' + koyebDomain : '');
+  if (!base) {
+    console.error('[bot] WEBHOOK_BASE_URL (or KOYEB_PUBLIC_DOMAIN) is not set — cannot register.');
+    console.error('[bot] The service stays up (GET /health works) but receives no updates until set.');
+    return;
+  }
+  // The bot token never appears in a URL. The secret is the path segment AND
+  // Telegram's secret_token header — both verified per request by server.js.
+  const url = base.replace(/\/+$/, '') + '/telegram/webhook/' + WEBHOOK_SECRET;
+  try {
+    await bot.setWebHook(url, {
+      secret_token: WEBHOOK_SECRET,
+      allowed_updates: ['message', 'callback_query'],
+      drop_pending_updates: false,
+    });
+    console.log('[bot] webhook registered (secret masked in logs; header check enforced).');
+  } catch (e) {
+    console.error('[bot] setWebHook failed:', (e && e.message) || e);
+  }
+}
+
+if (BOT_MODE === 'webhook') httpServer.once('listening', () => registerWebhook());
+
+// Graceful shutdown: stop timers/polling, close the HTTP server, report the
+// stopped state, then exit. Only SIGINT/SIGTERM trigger it — never a request.
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log('[bot] ' + signal + ' received — shutting down gracefully...');
+  const hardExit = setTimeout(() => {
+    console.error('[bot] shutdown timed out — forcing exit.');
+    process.exit(1);
+  }, 10000);
+  if (hardExit.unref) hardExit.unref();
+  try {
+    if (notifTimer) clearInterval(notifTimer);
+  } catch {
+    /* ignore */
+  }
+  try {
+    await new Promise((resolve) => httpServer.close(() => resolve()));
+  } catch (e) {
+    console.error('[bot] http server close error:', (e && e.message) || e);
+  }
+  try {
+    if (BOT_MODE === 'polling') await bot.stopPolling();
+  } catch (e) {
+    console.error('[bot] stopPolling error:', (e && e.message) || e);
+  }
+  try {
+    if (heartbeatStop) await heartbeatStop();
+  } catch (e) {
+    console.error('[bot] heartbeat stop error:', (e && e.message) || e);
+  }
+  clearTimeout(hardExit);
+  console.log('[bot] shutdown complete.');
+  process.exit(0);
+}
+process.on('SIGINT', () => {
+  shutdown('SIGINT');
+});
+process.on('SIGTERM', () => {
+  shutdown('SIGTERM');
+});
+// Last-resort guards: log only — a bad update or request must never kill the
+// service (Telegram retries; the platform would otherwise restart-loop us).
+process.on('unhandledRejection', (r) => console.error('[bot] unhandledRejection:', (r && r.message) || r));
+process.on('uncaughtException', (e) => console.error('[bot] uncaughtException:', (e && e.message) || e));
 
 const MAIN_MENU = {
   reply_markup: {
@@ -308,11 +430,16 @@ async function showOrderDetail(chatId, telegramId, orderId) {
     text += `• ${it.product_name} × ${it.quantity} = ${Number(it.total)} دج\n`;
   }
   text += `\nالمجموع الفرعي: ${Number(o.subtotal)} دج\n`;
+  if (Number(o.discount) > 0) text += `الخصم: -${Number(o.discount)} دج\n`;
   text += `التوصيل: ${Number(o.delivery_fee)} دج\n`;
   text += `💰 الإجمالي: ${Number(o.total)} دج\n\n`;
   text += `📍 ${o.wilaya} — ${o.commune}\n${o.address}\n`;
   text += `💵 ${o.payment_method === 'cod' ? 'الدفع عند الاستلام' : o.payment_method}`;
-  await bot.sendMessage(chatId, text);
+  await bot.sendMessage(chatId, text, {
+    reply_markup: {
+      inline_keyboard: [[{ text: '🔙 رجوع إلى طلباتي', callback_data: 'orders' }]],
+    },
+  });
 }
 
 /** Send one product card: photo (or text fallback) + Add to Cart button. */
@@ -521,18 +648,24 @@ bot.on('callback_query', async (q) => {
     }
     await bot.sendMessage(chatId, '⏳ جاري إنشاء طلبك...');
     const c = session.context || {};
+
+    // REAL SCHEMA v2: the order carries the customer/address snapshot directly.
+    // No address_id and no addresses row — the RPC validates every field itself.
+    // The checkout session already holds: name, phone, wilaya, commune, address.
     const result = await createOrder(account.user_id, {
-      name: c.name,
-      phone: c.phone,
-      wilaya: c.wilaya,
-      commune: c.commune,
-      address: c.address,
+      name: String(c.name || ''),
+      phone: String(c.phone || ''),
+      wilaya: String(c.wilaya || ''),
+      commune: String(c.commune || ''),
+      address: String(c.address || ''),
+      notes: null,
+      couponCode: null,
     });
     if (result.ok) {
       await clearSessionContext(telegramId, chatId, 'idle');
       await bot.sendMessage(
         chatId,
-        `✅ تم استلام طلبك بنجاح!\n\n📦 رقم الطلب: ${result.orderNumber}\n💰 الإجمالي: ${result.total} دج (شامل التوصيل)\n💵 الدفع عند الاستلام\n\nسنُخطرك عند تحديث حالة الطلب. شكراً لثقتك بـ NOVA! 🛍️`,
+        `✅ تم استلام طلبك بنجاح!\n\n📦 رقم الطلب: ${result.orderId}\n💰 الإجمالي: ${result.total} دج (شامل التوصيل)\n💵 الدفع عند الاستلام\n\nسنُخطرك عند تحديث حالة الطلب. شكراً لثقتك بـ NOVA! 🛍️`,
         MAIN_MENU,
       );
     } else if (result.reason === 'stock') {
@@ -545,6 +678,11 @@ bot.on('callback_query', async (q) => {
     } else if (result.reason === 'empty_cart') {
       await clearSessionContext(telegramId, chatId, 'idle');
       await bot.sendMessage(chatId, '🛒 سلتك فارغة — تعذر إتمام الطلب.');
+    } else if (result.reason === 'customer_data') {
+      await clearSessionContext(telegramId, chatId, 'idle');
+      await bot.sendMessage(chatId, '⚠️ بيانات التوصيل غير مكتملة. ابدأ الطلب من جديد عبر «إتمام الطلب».');
+    } else if (result.reason === 'coupon' || result.reason === 'coupon_min') {
+      await bot.sendMessage(chatId, '⚠️ الكوبون غير صالح لهذا الطلب. أعد المحاولة بدونه.');
     } else {
       await bot.sendMessage(chatId, '⚠️ صرت مشكلة صغيرة أثناء إنشاء الطلب. حاول مرة أخرى.');
     }
@@ -682,4 +820,4 @@ async function pollNotifications() {
     notifPollBusy = false;
   }
 }
-setInterval(pollNotifications, NOTIF_POLL_MS);
+notifTimer = setInterval(pollNotifications, NOTIF_POLL_MS); // cleared by shutdown()

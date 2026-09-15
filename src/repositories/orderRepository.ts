@@ -515,7 +515,8 @@ export const orderRepository = {
           if (sErr) throw sErr;
         }
 
-        // Insert notification
+        // Insert notification (best effort — the cancellation is already
+        // committed; a failed notification must not fail the cancellation).
         const { error: nErr } = await supabase.from('notifications').insert({
           id: uid(),
           user_id: orderRow.user_id,
@@ -525,7 +526,9 @@ export const orderRepository = {
           order_id: orderRow.id,
           read: false,
         });
-        if (nErr) throw nErr;
+        if (nErr) {
+          console.error('[orderRepository] cancel notification error:', nErr.message || nErr);
+        }
 
         return {
           id: updated.id,

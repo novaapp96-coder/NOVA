@@ -27,10 +27,21 @@ export default function AdminOrderDetailsScreen({ navigation, route }: Props) {
   const [order, setOrder] = useState<Order | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
-    const found = orders.find((o) => o.id === orderId) ?? null;
-    setOrder(found);
-  }, [orders, orderId]);
+  const load = useCallback(async () => {
+    const local = orders.find((o) => o.id === orderId) ?? null;
+    if (local) {
+      setOrder(local);
+      return;
+    }
+    // The app store holds only the signed-in user's orders, while the admin
+    // list covers ALL users' orders — fetch any missing one via the admin
+    // repository (orders.id stays TEXT: 'NOVA-000012'; no UUID/number parsing).
+    try {
+      setOrder(await adminRepository.getOrder(user, orderId));
+    } catch {
+      setOrder(null);
+    }
+  }, [orders, orderId, user]);
 
   useEffect(() => {
     load();
