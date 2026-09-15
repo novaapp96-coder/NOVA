@@ -166,8 +166,14 @@ async function getOrderDetail(userId, orderId) {
   return { order, items: items || [] };
 }
 
-/** Unread notifications for the bot bridge (never marked as read here). */
-async function getUserNotifications(userId, sinceIso, limit = 10) {
+/**
+ * Notifications for the bot bridge (never marked as read here).
+ * Backward-compatible: `excludeIds` is optional — callers that pass only
+ * (userId, sinceIso, limit) behave exactly as before. When the bot passes the
+ * already-sent notification id, the query stops returning it even though
+ * `gte(created_at, since)` is inclusive (the root cause of duplicate sends).
+ */
+async function getUserNotifications(userId, sinceIso, limit = 10, excludeIds = null) {
   let q = supabase
     .from('notifications')
     .select('id, order_id, title, body, created_at')
@@ -175,6 +181,11 @@ async function getUserNotifications(userId, sinceIso, limit = 10) {
     .order('created_at', { ascending: true })
     .limit(limit);
   if (sinceIso) q = q.gte('created_at', sinceIso);
+  const ids = Array.isArray(excludeIds) ? excludeIds.filter(Boolean) : [];
+  if (ids.length > 0) {
+    // PostgREST: not in (uuid list). Quoting each id keeps any format safe.
+    q = q.not('id', 'in', `(${ids.map((x) => `"${x}"`).join(',')})`);
+  }
   const { data, error } = await q;
   if (error) {
     console.error('[orders] getUserNotifications error:', error.message || error);

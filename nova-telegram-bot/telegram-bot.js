@@ -40,6 +40,10 @@ const {
   getUserNotifications,
   STATUS_LABELS,
 } = require('./orders');
+const {
+  dispatchNotifications,
+  buildNotificationMessage,
+} = require('./notifications');
 const agent = require('./agent');
 const { startHeartbeat, reportStatus } = require('./status');
 const { startServer } = require('./server');
@@ -779,38 +783,66 @@ process.on('uncaughtException', (e) => console.error('[bot uncaughtException]', 
 /**
  * Notification bridge: polls app notifications (notifications table) for every
  * linked Telegram account and forwards them to their chats. Progress is stored
- * in context.lastNotifiedAt — the app's notifications are NEVER marked as read.
+ * in context.lastNotifiedId (+ lastNotifiedAt fallback) — the app's
+ * notifications are NEVER marked as read.
+ *
+ * Idempotency (fixes the duplicate-sends bug):
+ *   - the cursor is the last SUCCESSFULLY sent notification id — not a
+ *     timestamp alone (the old gte(created_at, since) query kept returning the
+ *     cursor row forever, so the last notification was re-sent every poll),
+ *   - the already-sent id is excluded server-side (getUserNotifications) AND
+ *     re-checked client-side (pendingNotifications),
+ *   - sends happen in ascending (created_at, id) order, one at a time,
+ *   - the cursor advances ONLY after a successful Telegram send — a failure
+ *     keeps the notification pending and it is retried on the next poll,
+ *   - the cursor lives in the DB session context → restart-safe (Railway/Koyeb).
  */
 const NOTIF_POLL_MS = 30000;
 let notifPollBusy = false;
 async function pollNotifications() {
-  if (notifPollBusy) return;
+  if (notifPollBusy) return; // never overlapping runs
   notifPollBusy = true;
   try {
     const accounts = await getLinkedAccounts();
     for (const acc of accounts) {
+      // eslint-disable-next-line no-await-in-loop
       const sessions = await getSessionsForTelegram(acc.telegram_id);
       for (const s of sessions) {
+        const cursor = (s.context && s.context.lastNotifiedId)
+          ? { lastNotifiedId: s.context.lastNotifiedId, lastNotifiedAt: s.context.lastNotifiedAt || null }
+          : { lastNotifiedId: null, lastNotifiedAt: (s.context && s.context.lastNotifiedAt) || null };
         const defaultSince = new Date(Date.now() - 5 * 60 * 1000).toISOString();
-        const since = (s.context && s.context.lastNotifiedAt) || defaultSince;
+        const since = cursor.lastNotifiedAt || defaultSince;
         // eslint-disable-next-line no-await-in-loop
-        const notifs = await getUserNotifications(acc.user_id, since, 10);
-        for (const n of notifs) {
-          const body = `🔔 ${n.title || 'إشعار'}\n${n.body || ''}`.trim();
-          const opts = n.order_id
-            ? {
-                reply_markup: {
-                  inline_keyboard: [[{ text: '📦 عرض الطلب', callback_data: `order:${n.order_id}` }]],
-                },
-              }
-            : undefined;
+        const notifs = await getUserNotifications(
+          acc.user_id,
+          since,
+          10,
+          cursor.lastNotifiedId ? [cursor.lastNotifiedId] : null,
+        );
+        if (notifs.length === 0) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const result = await dispatchNotifications({
+          notifications: notifs,
+          cursor,
+          // No swallow: a failed send throws here and the cursor is NOT advanced.
+          send: async (n) => {
+            const m = buildNotificationMessage(n);
+            await bot.sendMessage(s.chat_id, m.text, m.options);
+          },
+        });
+        // Persist the bot cursor ONLY for successful sends.
+        if (result.lastProcessedId) {
           // eslint-disable-next-line no-await-in-loop
-          await bot.sendMessage(s.chat_id, body, opts).catch(() => {});
+          await setSessionState(
+            acc.telegram_id,
+            s.chat_id,
+            s.state || 'idle',
+            { lastNotifiedId: result.lastProcessedId, lastNotifiedAt: result.lastProcessedAt },
+          );
         }
-        if (notifs.length > 0) {
-          const newest = notifs[notifs.length - 1].created_at;
-          // eslint-disable-next-line no-await-in-loop
-          await setSessionState(acc.telegram_id, s.chat_id, s.state || 'idle', { lastNotifiedAt: newest });
+        if (!result.ok) {
+          console.error('[bot] notification send failed:', result.error, '— will retry next poll.');
         }
       }
     }
