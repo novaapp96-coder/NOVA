@@ -277,12 +277,12 @@ async function generateAIResponse({ text, history, executeToolFn, ctx }) {
     {
       name: 'openrouter',
       available: () => !!cfg.openrouterKey,
-      run: () => generateWithOpenRouter(base),
+      run: () => generateWithOpenRouter({ ...base, apiKey: cfg.openrouterKey, model: cfg.openrouterModel }),
     },
     {
       name: 'groq',
       available: () => !!cfg.groqKey,
-      run: () => generateWithGroq(base),
+      run: () => generateWithGroq({ ...base, apiKey: cfg.groqKey, model: cfg.groqModel }),
     },
   ]);
 }
@@ -301,5 +301,3 @@ module.exports = {
     isGeminiInCooldown: () => Date.now() < geminiUnavailableUntil,
   },
 };
-
-

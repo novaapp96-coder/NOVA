@@ -334,6 +334,7 @@ testAsync('notifications TEST 6: identical created_at rows do not duplicate', as
 // ---------------------------------------------------------------------------
 const {
   runFailover,
+  generateAIResponse,
   generateWithOpenAICompatible,
   isRetryableAIError,
   isGeminiDailyQuotaError,
@@ -527,4 +528,74 @@ test('ai: resolveConfig defaults are the verified production slugs', () => {
   assert.strictEqual(cfg.timeoutMs, 20000);
 });
 
+testAsync('ai: generateAIResponse wires apiKey+model into OpenRouter (mocked fetch)', async () => {
+  const saved = {
+    gemini: process.env.GEMINI_API_KEY,
+    openrouter: process.env.OPENROUTER_API_KEY,
+    groq: process.env.GROQ_API_KEY,
+    orModel: process.env.OPENROUTER_MODEL,
+  };
+  const realFetch = global.fetch;
+  let captured = null;
+  global.fetch = async (url, init) => {
+    captured = { url, auth: init.headers.Authorization, body: JSON.parse(init.body) };
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'fb-ok' } }] }) };
+  };
+  try {
+    process.env.GEMINI_API_KEY = '';
+    process.env.OPENROUTER_API_KEY = 'sk-FAKE-WIRING-TEST-KEY';
+    process.env.GROQ_API_KEY = '';
+    delete process.env.OPENROUTER_MODEL;
+    const r = await generateAIResponse({ text: 'test search query', history: [], executeToolFn: async () => ({}), ctx: {} });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.provider, 'openrouter');
+    assert.strictEqual(r.text, 'fb-ok');
+    assert.ok(String(captured.url).includes('openrouter.ai/api/v1/chat/completions'));
+    assert.strictEqual(captured.body.model, 'openrouter/free');
+    assert.strictEqual(captured.body.messages[0].role, 'system');
+    assert.strictEqual(captured.auth, 'Bearer sk-FAKE-WIRING-TEST-KEY');
+  } finally {
+    global.fetch = realFetch;
+    process.env.GEMINI_API_KEY = saved.gemini;
+    process.env.OPENROUTER_API_KEY = saved.openrouter;
+    process.env.GROQ_API_KEY = saved.groq;
+    if (saved.orModel !== undefined) process.env.OPENROUTER_MODEL = saved.orModel;
+    else delete process.env.OPENROUTER_MODEL;
+  }
+});
+
+testAsync('ai: generateAIResponse wires apiKey+model into Groq (mocked fetch)', async () => {
+  const saved = {
+    gemini: process.env.GEMINI_API_KEY,
+    openrouter: process.env.OPENROUTER_API_KEY,
+    groq: process.env.GROQ_API_KEY,
+    gModel: process.env.GROQ_MODEL,
+  };
+  const realFetch = global.fetch;
+  let captured = null;
+  global.fetch = async (url, init) => {
+    captured = { url, auth: init.headers.Authorization, body: JSON.parse(init.body) };
+    return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'groq-ok' } }] }) };
+  };
+  try {
+    process.env.GEMINI_API_KEY = '';
+    process.env.OPENROUTER_API_KEY = '';
+    process.env.GROQ_API_KEY = 'gsk-FAKE-WIRING-TEST-KEY';
+    delete process.env.GROQ_MODEL;
+    const r = await generateAIResponse({ text: 'test query', history: [], executeToolFn: async () => ({}), ctx: {} });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.provider, 'groq');
+    assert.strictEqual(r.text, 'groq-ok');
+    assert.ok(String(captured.url).includes('api.groq.com/openai/v1/chat/completions'));
+    assert.strictEqual(captured.body.model, 'llama-3.3-70b-versatile');
+    assert.strictEqual(captured.auth, 'Bearer gsk-FAKE-WIRING-TEST-KEY');
+  } finally {
+    global.fetch = realFetch;
+    process.env.GEMINI_API_KEY = saved.gemini;
+    process.env.OPENROUTER_API_KEY = saved.openrouter;
+    process.env.GROQ_API_KEY = saved.groq;
+    if (saved.gModel !== undefined) process.env.GROQ_MODEL = saved.gModel;
+    else delete process.env.GROQ_MODEL;
+  }
+});
 runAsyncTests();
