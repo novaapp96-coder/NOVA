@@ -91,11 +91,6 @@ if (BOT_MODE === 'polling') {
 } else {
   console.log('[bot] NOVA Telegram Bot started (webhook).');
 }
-// TEMP DIAGNOSTIC (to be removed after verification): prints ONLY key
-// PRESENCE booleans — never values, prefixes/suffixes, headers or prompts.
-console.log('[ai] env GEMINI_API_KEY present=' + Boolean(process.env.GEMINI_API_KEY));
-console.log('[ai] env OPENROUTER_API_KEY present=' + Boolean(process.env.OPENROUTER_API_KEY));
-console.log('[ai] env GROQ_API_KEY present=' + Boolean(process.env.GROQ_API_KEY));
 if (TOKEN) heartbeatStop = startHeartbeat(bot, 60000);
 
 // One HTTP server for every route: GET /health (dependency-free), the Mini App
